@@ -1,0 +1,426 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NODE_VERSION: '22'
+  PYTHON_VERSION: '3.12'
+  FORCE_COLOR: '1'
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      backend: ${{ steps.filter.outputs.backend }}
+      docker: ${{ steps.filter.outputs.docker }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            frontend:
+              - 'frontend/**'
+              - '.github/workflows/ci.yml'
+            backend:
+              - 'backend/**'
+              - '.github/workflows/ci.yml'
+            docker:
+              - '**/Dockerfile*'
+              - '**/docker-compose*.yml'
+              - '.dockerignore'
+              - '.github/workflows/ci.yml'
+
+  # ---------------------------------------------------------------- frontend
+  frontend:
+    name: Frontend · React + TS + Recharts
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      CI: 'true'
+      NODE_OPTIONS: '--max-old-space-size=4096'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --no-fund
+
+      - name: Lint (ESLint)
+        run: npm run lint --if-present
+
+      - name: Format check (Prettier)
+        run: npx --no-install prettier --check "src/**/*.{ts,tsx,css,json}" || echo "::warning::Prettier formatting issues found"
+
+      - name: TypeScript strict typecheck
+        run: |
+          if npm run | grep -q 'typecheck'; then
+            npm run typecheck
+          else
+            npx --no-install tsc --noEmit --pretty
+          fi
+
+      - name: Unit tests (Vitest / Jest)
+        run: |
+          if npm run | grep -q ' test'; then
+            npm test -- --coverage --watch=false --passWithNoTests 2>/dev/null || npm test -- --run --coverage --passWithNoTests
+          else
+            echo "No test script configured; skipping."
+          fi
+
+      - name: Production build check
+        run: npm run build
+
+      - name: Upload coverage (Codecov)
+        if: always() && hashFiles('frontend/coverage/**') != ''
+        uses: codecov/codecov-action@v4
+        with:
+          flags: frontend
+          directory: frontend/coverage
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: |
+            frontend/dist
+            frontend/build
+          if-no-files-found: ignore
+          retention-days: 5
+
+  # ----------------------------------------------------------------- backend
+  backend-lint:
+    name: Backend · Ruff, Mypy, Migrations, Security
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DJANGO_SETTINGS_MODULE: ${{ vars.DJANGO_SETTINGS_MODULE || 'config.settings' }}
+      SECRET_KEY: 'ci-only-in-memory-secret-key-at-least-50-characters-long-12345'
+      JWT_SIGNING_KEY: 'ci-only-jwt-signing-key-at-least-32-chars-long'
+      DEBUG: 'False'
+      DATABASE_URL: sqlite:///ci-lint.sqlite3
+      REDIS_URL: redis://localhost:6379/0
+      CELERY_BROKER_URL: redis://localhost:6379/0
+      CELERY_RESULT_BACKEND: redis://localhost:6379/1
+      CELERY_TASK_ALWAYS_EAGER: 'True'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements*.txt
+            backend/pyproject.toml
+
+      - name: Install dependencies + linters
+        run: |
+          python -m pip install --upgrade pip
+          if [[ -f requirements-dev.txt ]]; then pip install -r requirements-dev.txt; fi
+          if [[ -f requirements.txt ]]; then pip install -r requirements.txt; else pip install -e '.[dev]' || pip install -e .; fi
+          pip install ruff mypy django-stubs djangorestframework-stubs types-requests bandit
+
+      - name: Ruff lint
+        run: ruff check . --output-format=github
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+      - name: Bandit SAST (Python security check)
+        run: bandit -r . -x ./tests,./venv,./.venv,./*/migrations -ll -ii || echo "::warning::Bandit reported findings"
+
+      - name: Mypy typecheck
+        continue-on-error: true
+        run: mypy . --ignore-missing-imports
+
+      - name: Check for missing Django migrations
+        run: python manage.py makemigrations --check --dry-run --noinput
+
+  backend-test:
+    name: Backend · Django, DRF, Celery, Beat, WeasyPrint, Postgres, Redis
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: app
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d app"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DJANGO_SETTINGS_MODULE: ${{ vars.DJANGO_SETTINGS_MODULE || 'config.settings' }}
+      SECRET_KEY: 'ci-only-in-memory-secret-key-at-least-50-characters-long-12345'
+      JWT_SIGNING_KEY: 'ci-only-jwt-signing-key-at-least-32-chars-long'
+      DEBUG: 'False'
+      ALLOWED_HOSTS: localhost,127.0.0.1,testserver
+      POSTGRES_DB: app
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: '5432'
+      DB_NAME: app
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_HOST: localhost
+      DB_PORT: '5432'
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/app
+      REDIS_URL: redis://localhost:6379/0
+      CELERY_BROKER_URL: redis://localhost:6379/0
+      CELERY_RESULT_BACKEND: redis://localhost:6379/1
+      CELERY_TASK_ALWAYS_EAGER: 'True'
+      CELERY_TASK_EAGER_PROPAGATES: 'True'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements*.txt
+            backend/pyproject.toml
+
+      - name: Install WeasyPrint system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libpango-1.0-0 libpangoft2-1.0-0 libpangocairo-1.0-0 \
+            libharfbuzz0b libharfbuzz-subset0 libcairo2 libgdk-pixbuf-2.0-0 \
+            libffi-dev shared-mime-info fonts-dejavu-core
+
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
+          if [[ -f requirements-dev.txt ]]; then pip install -r requirements-dev.txt; fi
+          if [[ -f requirements.txt ]]; then pip install -r requirements.txt; else pip install -e '.[dev]' || pip install -e .; fi
+          pip install pytest pytest-django pytest-cov pytest-xdist coverage
+
+      - name: Run migrations & Django system check
+        run: |
+          python manage.py migrate --noinput
+          python manage.py check
+
+      - name: Verify WeasyPrint PDF rendering (Full smoke test)
+        run: |
+          python -c "
+          import weasyprint
+          pdf = weasyprint.HTML(string='<h1>CI WeasyPrint Smoke Test</h1><p>Render OK</p>').write_pdf()
+          assert pdf.startswith(b'%PDF'), 'WeasyPrint failed to generate valid PDF bytes'
+          print(f'WeasyPrint {weasyprint.__version__} generated {len(pdf)} bytes successfully.')
+          "
+
+      - name: Verify Celery & Celery Beat configuration
+        run: |
+          python -c "
+          import os, django
+          django.setup()
+          from celery import current_app
+          current_app.loader.import_default_modules()
+          tasks = [t for t in current_app.tasks.keys() if not t.startswith('celery.')]
+          beat_schedule = getattr(current_app.conf, 'beat_schedule', {}) or {}
+          print(f'Discovered {len(tasks)} custom Celery tasks and {len(beat_schedule)} Beat schedules.')
+          "
+
+      - name: Validate DRF OpenAPI Schema (if drf-spectacular installed)
+        run: |
+          if python -c "import drf_spectacular" 2>/dev/null; then
+            python manage.py spectacular --validate --fail-on-warn || python manage.py spectacular --validate
+          else
+            echo "drf-spectacular not installed; skipping schema check."
+          fi
+
+      - name: Run tests with coverage
+        run: |
+          if [[ -f pytest.ini || -f conftest.py ]] || grep -q '\[tool.pytest' pyproject.toml 2>/dev/null; then
+            pytest -n auto --cov=. --cov-report=xml --cov-report=term-missing --junitxml=junit.xml -q
+          else
+            coverage run manage.py test --parallel auto --noinput
+            coverage xml
+          fi
+
+      - name: Upload coverage (Codecov)
+        if: always() && hashFiles('backend/coverage.xml') != ''
+        uses: codecov/codecov-action@v4
+        with:
+          flags: backend
+          files: backend/coverage.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Publish test report
+        if: always() && hashFiles('backend/junit.xml') != ''
+        uses: dorny/test-reporter@v1
+        with:
+          name: Backend tests
+          path: backend/junit.xml
+          reporter: java-junit
+
+  # ---------------------------------------------------------------- security
+  security:
+    name: Security · Gitleaks, Dependency Audit, CodeQL
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, python]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Secret scan (Gitleaks)
+        if: matrix.language == 'python'
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Python dependency audit (pip-audit)
+        if: matrix.language == 'python' && hashFiles('backend/requirements.txt') != ''
+        uses: pypa/gh-action-pip-audit@v1.1.0
+        continue-on-error: true
+        with:
+          inputs: backend/requirements.txt
+
+      - name: Frontend dependency audit (npm audit)
+        if: matrix.language == 'javascript-typescript' && hashFiles('frontend/package-lock.json') != ''
+        working-directory: frontend
+        run: npm audit --omit=dev --audit-level=high || echo "::warning::npm audit found high/critical issues"
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}
+
+  # ------------------------------------------------------------------ docker
+  docker:
+    name: Docker · Hadolint + Build + Trivy Scan
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.frontend == 'true' || needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [frontend, backend]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check if Dockerfile exists
+        id: has
+        run: echo "ok=$([[ -f ${{ matrix.component }}/Dockerfile ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - uses: hadolint/hadolint-action@v3.1.0
+        if: steps.has.outputs.ok == 'true'
+        with:
+          dockerfile: ${{ matrix.component }}/Dockerfile
+          failure-threshold: error
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.has.outputs.ok == 'true'
+
+      - uses: docker/build-push-action@v6
+        if: steps.has.outputs.ok == 'true'
+        with:
+          context: ${{ matrix.component }}
+          push: false
+          load: true
+          tags: ci/${{ matrix.component }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+
+      - name: Trivy container vulnerability scan
+        if: steps.has.outputs.ok == 'true'
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ci/${{ matrix.component }}:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '0'
+
+      - name: Validate docker-compose config
+        if: matrix.component == 'backend'
+        run: |
+          for f in docker-compose*.yml; do
+            [[ -f "$f" ]] && docker compose -f "$f" config -q && echo "$f is valid"
+          done
+
+  # ---------------------------------------------------- single required check
+  ci-ok:
+    name: CI passed
+    if: always()
+    needs: [frontend, backend-lint, backend-test, security, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all upstream jobs succeeded or were skipped
+        run: |
+          echo '${{ toJSON(needs) }}' | jq -e 'to_entries | all(.value.result == "success" or .value.result == "skipped")'
