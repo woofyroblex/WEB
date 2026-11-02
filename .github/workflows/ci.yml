@@ -35,10 +35,10 @@ jobs:
       has_javascript: ${{ steps.components.outputs.javascript }}
       has_python: ${{ steps.components.outputs.python }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
@@ -58,18 +58,18 @@ jobs:
         id: components
         shell: bash
         run: |
-          if [[ -d frontend ]]; then
+          if [[ -f frontend/package.json && -f frontend/package-lock.json ]]; then
             echo "frontend=true" >> "$GITHUB_OUTPUT"
           else
             echo "frontend=false" >> "$GITHUB_OUTPUT"
-            echo "Frontend checks will be skipped: frontend/ is not present."
+            echo "Frontend checks will be skipped: frontend/package.json and package-lock.json are required."
           fi
 
-          if [[ -d backend ]]; then
+          if [[ -f backend/requirements.txt || -f backend/pyproject.toml ]]; then
             echo "backend=true" >> "$GITHUB_OUTPUT"
           else
             echo "backend=false" >> "$GITHUB_OUTPUT"
-            echo "Backend checks will be skipped: backend/ is not present."
+            echo "Backend checks will be skipped: backend/requirements.txt or backend/pyproject.toml is required."
           fi
 
           if find . -path './.git' -prune -o -type f \
@@ -112,11 +112,11 @@ jobs:
       CI: 'true'
       NODE_OPTIONS: '--max-old-space-size=4096'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -152,7 +152,7 @@ jobs:
 
       - name: Upload coverage (Codecov)
         if: always() && hashFiles('frontend/coverage/**') != ''
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           flags: frontend
           directory: frontend/coverage
@@ -160,7 +160,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: frontend-dist
           path: |
@@ -192,11 +192,11 @@ jobs:
       CELERY_RESULT_BACKEND: redis://localhost:6379/1
       CELERY_TASK_ALWAYS_EAGER: 'True'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -278,11 +278,11 @@ jobs:
       CELERY_TASK_ALWAYS_EAGER: 'True'
       CELERY_TASK_EAGER_PROPAGATES: 'True'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -350,7 +350,7 @@ jobs:
 
       - name: Upload coverage (Codecov)
         if: always() && hashFiles('backend/coverage.xml') != ''
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           flags: backend
           files: backend/coverage.xml
@@ -359,7 +359,7 @@ jobs:
 
       - name: Publish test report
         if: always() && hashFiles('backend/junit.xml') != ''
-        uses: dorny/test-reporter@v1
+        uses: dorny/test-reporter@v3
         with:
           name: Backend tests
           path: backend/junit.xml
@@ -380,14 +380,14 @@ jobs:
       matrix:
         language: [javascript-typescript, python]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Secret scan (Gitleaks)
         if: matrix.language == 'python'
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -403,7 +403,7 @@ jobs:
         working-directory: frontend
         run: npm audit --omit=dev --audit-level=high || echo "::warning::npm audit found high/critical issues"
 
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@v4
         if: >-
           (matrix.language == 'javascript-typescript' && needs.changes.outputs.has_javascript == 'true') ||
           (matrix.language == 'python' && needs.changes.outputs.has_python == 'true')
@@ -411,7 +411,7 @@ jobs:
           languages: ${{ matrix.language }}
           queries: security-and-quality
 
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@v4
         if: >-
           (matrix.language == 'javascript-typescript' && needs.changes.outputs.has_javascript == 'true') ||
           (matrix.language == 'python' && needs.changes.outputs.has_python == 'true')
@@ -433,7 +433,7 @@ jobs:
       matrix:
         component: [frontend, backend]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -441,16 +441,16 @@ jobs:
         id: has
         run: echo "ok=$([[ -f ${{ matrix.component }}/Dockerfile ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
-      - uses: hadolint/hadolint-action@v3.1.0
+      - uses: hadolint/hadolint-action@v3.5.0
         if: steps.has.outputs.ok == 'true'
         with:
           dockerfile: ${{ matrix.component }}/Dockerfile
           failure-threshold: error
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
         if: steps.has.outputs.ok == 'true'
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         if: steps.has.outputs.ok == 'true'
         with:
           context: ${{ matrix.component }}
