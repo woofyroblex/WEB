@@ -1,4 +1,4 @@
-name: Free AI PR Review & Conflict Resolver
+name: Gemini PR Review & Conflict Resolver
 
 on:
   pull_request:
@@ -12,10 +12,10 @@ concurrency:
 
 jobs:
   # ===========================================================================
-  # JOB 1: Automatic Free AI Code Review (GitHub Models + Optional Gemini/Groq)
+  # JOB 1: Automatic AI Code Review (Gemini)
   # ===========================================================================
   ai-review:
-    name: AI Code Review (Free)
+    name: AI Code Review (Gemini)
     if: >-
       github.event_name == 'pull_request' &&
       !github.event.pull_request.draft &&
@@ -26,31 +26,24 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
-      models: read   # Grants free access to GitHub Models via GITHUB_TOKEN!
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Run Free Multi-Model AI Review
+      - name: Run Gemini AI Review
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          REPO: ${{ github.repository }}
         run: |
           python3 - << 'EOF'
-          import os, subprocess, json, urllib.request, urllib.error
+          import os, subprocess, json, urllib.request
 
-          repo = os.environ["REPO"]
           pr_num = os.environ["PR_NUMBER"]
           base_ref = os.environ["BASE_REF"]
-          github_token = os.environ["GITHUB_TOKEN"]
           gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
-          groq_key = os.environ.get("GROQ_API_KEY", "").strip()
 
           # 1. Get PR diff (excluding lockfiles & migrations noise)
           diff_cmd = [
@@ -87,91 +80,39 @@ jobs:
 
           user_prompt = f"Review this PR diff:\n\n```diff\n{truncated_diff}\n```"
 
-          def call_github_models():
-              url = "[models.github.ai](https://models.github.ai/inference/chat/completions)"
-              payload = {
-                  "model": "openai/gpt-4.1",
-                  "messages": [
-                      {"role": "system", "content": system_prompt},
-                      {"role": "user", "content": user_prompt}
-                  ],
-                  "temperature": 0.2
-              }
-              req = urllib.request.Request(
-                  url,
-                  data=json.dumps(payload).encode("utf-8"),
-                  headers={
-                      "Authorization": f"Bearer {github_token}",
-                      "Content-Type": "application/json",
-                      "Accept": "application/vnd.github+json"
-                  }
-              )
-              with urllib.request.urlopen(req, timeout=90) as resp:
-                  data = json.loads(resp.read().decode("utf-8"))
-                  return "GitHub Models (GPT-4.1)", data["choices"][0]["message"]["content"]
-
           def call_gemini():
-              url = f"[generativelanguage.googleapis.com](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key})"
+              url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
               payload = {
                   "systemInstruction": {"parts": [{"text": system_prompt}]},
                   "contents": [{"parts": [{"text": user_prompt}]}],
-                  "generationConfig": {"temperature": 0.2}
-              }
-              req = urllib.request.Request(
-                  url,
-                  data=json.dumps(payload).encode("utf-8"),
-                  headers={"Content-Type": "application/json"}
-              )
-              with urllib.request.urlopen(req, timeout=90) as resp:
-                  data = json.loads(resp.read().decode("utf-8"))
-                  return "Google Gemini 2.5 Flash", data["candidates"][0]["content"]["parts"][0]["text"]
-
-          def call_groq():
-              url = "[api.groq.com](https://api.groq.com/openai/v1/chat/completions)"
-              payload = {
-                  "model": "llama-3.3-70b-versatile",
-                  "messages": [
-                      {"role": "system", "content": system_prompt},
-                      {"role": "user", "content": user_prompt}
-                  ],
-                  "temperature": 0.2
+                  "generationConfig": {
+                      "thinkingConfig": {"thinkingLevel": "low"}
+                  }
               }
               req = urllib.request.Request(
                   url,
                   data=json.dumps(payload).encode("utf-8"),
                   headers={
-                      "Authorization": f"Bearer {groq_key}",
-                      "Content-Type": "application/json"
+                      "Content-Type": "application/json",
+                      "x-goog-api-key": gemini_key
                   }
               )
-              with urllib.request.urlopen(req, timeout=90) as resp:
+              with urllib.request.urlopen(req, timeout=180) as resp:
                   data = json.loads(resp.read().decode("utf-8"))
-                  return "Groq (Llama 3.3 70B)", data["choices"][0]["message"]["content"]
+                  return "Google Gemini Flash", data["candidates"][0]["content"]["parts"][0]["text"]
 
           reviews = []
-          # Always run free GitHub Models first
-          try:
-              reviews.append(call_github_models())
-          except Exception as e:
-              print(f"GitHub Models error: {e}")
-
-          # Also run Gemini if free key is provided
+          # Run Gemini when the repository secret is configured.
           if gemini_key:
               try:
                   reviews.append(call_gemini())
               except Exception as e:
                   print(f"Gemini error: {e}")
-
-          # Fallback to Groq if provided and needed
-          if groq_key and not reviews:
-              try:
-                  reviews.append(call_groq())
-              except Exception as e:
-                  print(f"Groq error: {e}")
+          else:
+              print("GEMINI_API_KEY is not configured.")
 
           if not reviews:
-              print("No AI review could be generated.")
-              exit(0)
+              raise SystemExit("No AI review could be generated. Check GEMINI_API_KEY and the API response above.")
 
           body_parts = ["## 🤖 Automated AI Code Review\n"]
           for provider, content in reviews:
@@ -213,7 +154,7 @@ jobs:
     if: >-
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request &&
-      contains(lowercase(github.event.comment.body), '@ai-bot') &&
+      contains(github.event.comment.body, '@ai-bot') &&
       (
         github.event.comment.author_association == 'OWNER' ||
         github.event.comment.author_association == 'MEMBER' ||
@@ -225,7 +166,6 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
-      models: read
     steps:
       - name: React to comment with eyes
         env:
@@ -250,9 +190,9 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Merge base branch & resolve conflicts with AI
+      - name: Merge base branch & resolve conflicts with Gemini
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           BASE_REF: ${{ steps.pr.outputs.base_ref }}
           HEAD_REF: ${{ steps.pr.outputs.head_ref }}
@@ -275,7 +215,6 @@ jobs:
           python3 - << 'EOF'
           import os, subprocess, json, urllib.request
 
-          github_token = os.environ["GITHUB_TOKEN"]
           gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
           pr_num = os.environ["PR_NUMBER"]
           base_ref = os.environ["BASE_REF"]
@@ -308,44 +247,31 @@ jobs:
           {content}"""
 
               resolved_text = None
-              try:
-                  url = "[models.github.ai](https://models.github.ai/inference/chat/completions)"
-                  payload = {
-                      "model": "openai/gpt-4.1",
-                      "messages": [
-                          {"role": "system", "content": "You output only raw valid source code with all git conflict markers resolved. Never wrap output in markdown backticks."},
-                          {"role": "user", "content": prompt}
-                      ],
-                      "temperature": 0.1
-                  }
-                  req = urllib.request.Request(
-                      url,
-                      data=json.dumps(payload).encode("utf-8"),
-                      headers={
-                          "Authorization": f"Bearer {github_token}",
-                          "Content-Type": "application/json",
-                          "Accept": "application/vnd.github+json"
-                      }
-                  )
-                  with urllib.request.urlopen(req, timeout=90) as resp:
-                      data = json.loads(resp.read().decode("utf-8"))
-                      resolved_text = data["choices"][0]["message"]["content"]
-              except Exception as e:
-                  print(f"GitHub Models failed on {filepath}: {e}")
-
-              if not resolved_text and gemini_key:
+              if gemini_key:
                   try:
-                      url = f"[generativelanguage.googleapis.com](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key})"
+                      url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
                       payload = {
+                          "systemInstruction": {"parts": [{"text": "Return only the complete resolved file content, with no markdown fences or explanation."}]},
                           "contents": [{"parts": [{"text": prompt}]}],
-                          "generationConfig": {"temperature": 0.1}
+                          "generationConfig": {
+                              "thinkingConfig": {"thinkingLevel": "low"}
+                          }
                       }
-                      req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
-                      with urllib.request.urlopen(req, timeout=90) as resp:
+                      req = urllib.request.Request(
+                          url,
+                          data=json.dumps(payload).encode("utf-8"),
+                          headers={
+                              "Content-Type": "application/json",
+                              "x-goog-api-key": gemini_key
+                          }
+                      )
+                      with urllib.request.urlopen(req, timeout=180) as resp:
                           data = json.loads(resp.read().decode("utf-8"))
                           resolved_text = data["candidates"][0]["content"]["parts"][0]["text"]
                   except Exception as e:
                       print(f"Gemini failed on {filepath}: {e}")
+              else:
+                  print("GEMINI_API_KEY is not configured; cannot resolve conflicts with Gemini.")
 
               if resolved_text:
                   # Strip accidental markdown code fences if the LLM added them
