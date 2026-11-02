@@ -1,0 +1,13 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+extend-exclude = [
+    "projects/migrations",
+    "*/migrations/*",
+]
+
+[tool.ruff.lint]
+ignore = [
+    "RUF012", # Django models use class attributes for constraints, etc.
+    "EXE001", # manage.py invoked via python manage.py
+]
