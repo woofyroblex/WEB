@@ -1,0 +1,81 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ['*']
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    groups:
+      react-and-charts:
+        patterns:
+          - 'react'
+          - 'react-dom'
+          - 'react-router*'
+          - 'recharts*'
+          - '@types/react*'
+      typescript-tooling:
+        patterns:
+          - 'typescript'
+          - 'eslint*'
+          - '@typescript-eslint/*'
+          - 'prettier'
+          - 'vite*'
+          - '@vitejs/*'
+          - 'vitest*'
+      frontend-minor-and-patch:
+        patterns: ['*']
+        update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    groups:
+      django-and-jwt:
+        patterns:
+          - 'django'
+          - 'djangorestframework*'
+          - 'django-*'
+          - 'PyJWT'
+      celery-and-redis:
+        patterns:
+          - 'celery*'
+          - 'django-celery-*'
+          - 'redis'
+          - 'kombu'
+          - 'billiard'
+      pdf-and-weasyprint:
+        patterns:
+          - 'weasyprint*'
+          - 'pydyf*'
+          - 'cffi*'
+          - 'cairocffi*'
+          - 'tinycss2*'
+          - 'fonttools*'
+      backend-minor-and-patch:
+        patterns: ['*']
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+
+  - package-ecosystem: docker
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
