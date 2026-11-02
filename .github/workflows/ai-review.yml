@@ -81,11 +81,13 @@ jobs:
           user_prompt = f"Review this PR diff:\n\n```diff\n{truncated_diff}\n```"
 
           def call_gemini():
-              url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
+              url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
               payload = {
                   "systemInstruction": {"parts": [{"text": system_prompt}]},
                   "contents": [{"parts": [{"text": user_prompt}]}],
-                  "generationConfig": {"temperature": 0.2}
+                  "generationConfig": {
+                      "thinkingConfig": {"thinkingLevel": "low"}
+                  }
               }
               req = urllib.request.Request(
                   url,
@@ -95,7 +97,7 @@ jobs:
                       "x-goog-api-key": gemini_key
                   }
               )
-              with urllib.request.urlopen(req, timeout=90) as resp:
+              with urllib.request.urlopen(req, timeout=180) as resp:
                   data = json.loads(resp.read().decode("utf-8"))
                   return "Google Gemini Flash", data["candidates"][0]["content"]["parts"][0]["text"]
 
@@ -247,11 +249,13 @@ jobs:
               resolved_text = None
               if gemini_key:
                   try:
-                      url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
+                      url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
                       payload = {
                           "systemInstruction": {"parts": [{"text": "Return only the complete resolved file content, with no markdown fences or explanation."}]},
                           "contents": [{"parts": [{"text": prompt}]}],
-                          "generationConfig": {"temperature": 0.1}
+                          "generationConfig": {
+                              "thinkingConfig": {"thinkingLevel": "low"}
+                          }
                       }
                       req = urllib.request.Request(
                           url,
@@ -261,7 +265,7 @@ jobs:
                               "x-goog-api-key": gemini_key
                           }
                       )
-                      with urllib.request.urlopen(req, timeout=90) as resp:
+                      with urllib.request.urlopen(req, timeout=180) as resp:
                           data = json.loads(resp.read().decode("utf-8"))
                           resolved_text = data["candidates"][0]["content"]["parts"][0]["text"]
                   except Exception as e:
