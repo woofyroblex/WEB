@@ -29,6 +29,11 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend }}
       backend: ${{ steps.filter.outputs.backend }}
       docker: ${{ steps.filter.outputs.docker }}
+      has_frontend: ${{ steps.components.outputs.frontend }}
+      has_backend: ${{ steps.components.outputs.backend }}
+      has_docker: ${{ steps.components.outputs.docker }}
+      has_javascript: ${{ steps.components.outputs.javascript }}
+      has_python: ${{ steps.components.outputs.python }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,11 +54,55 @@ jobs:
               - '.dockerignore'
               - '.github/workflows/ci.yml'
 
+      - name: Detect available components
+        id: components
+        shell: bash
+        run: |
+          if [[ -d frontend ]]; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "frontend=false" >> "$GITHUB_OUTPUT"
+            echo "Frontend checks will be skipped: frontend/ is not present."
+          fi
+
+          if [[ -d backend ]]; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "backend=false" >> "$GITHUB_OUTPUT"
+            echo "Backend checks will be skipped: backend/ is not present."
+          fi
+
+          if find . -path './.git' -prune -o -type f \
+            \( -name 'Dockerfile*' -o -name 'docker-compose*.yml' \
+            -o -name 'docker-compose*.yaml' -o -name '.dockerignore' \) \
+            -print -quit | grep -q .; then
+            echo "docker=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docker=false" >> "$GITHUB_OUTPUT"
+            echo "Docker checks will be skipped: no Dockerfile or compose file is present."
+          fi
+
+          if git ls-files -- '*.js' '*.jsx' '*.ts' '*.tsx' | grep -q .; then
+            echo "javascript=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "javascript=false" >> "$GITHUB_OUTPUT"
+            echo "JavaScript/TypeScript CodeQL will be skipped: no source files are present."
+          fi
+
+          if git ls-files -- '*.py' | grep -q .; then
+            echo "python=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "python=false" >> "$GITHUB_OUTPUT"
+            echo "Python CodeQL will be skipped: no source files are present."
+          fi
+
   # ---------------------------------------------------------------- frontend
   frontend:
     name: Frontend · React + TS + Recharts
     needs: changes
-    if: github.event_name != 'pull_request' || needs.changes.outputs.frontend == 'true'
+    if: >-
+      needs.changes.outputs.has_frontend == 'true' &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.frontend == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -124,7 +173,9 @@ jobs:
   backend-lint:
     name: Backend · Ruff, Mypy, Migrations, Security
     needs: changes
-    if: github.event_name != 'pull_request' || needs.changes.outputs.backend == 'true'
+    if: >-
+      needs.changes.outputs.has_backend == 'true' &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.backend == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     defaults:
@@ -179,7 +230,9 @@ jobs:
   backend-test:
     name: Backend · Django, DRF, Celery, Beat, WeasyPrint, Postgres, Redis
     needs: changes
-    if: github.event_name != 'pull_request' || needs.changes.outputs.backend == 'true'
+    if: >-
+      needs.changes.outputs.has_backend == 'true' &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.backend == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     services:
@@ -351,11 +404,17 @@ jobs:
         run: npm audit --omit=dev --audit-level=high || echo "::warning::npm audit found high/critical issues"
 
       - uses: github/codeql-action/init@v3
+        if: >-
+          (matrix.language == 'javascript-typescript' && needs.changes.outputs.has_javascript == 'true') ||
+          (matrix.language == 'python' && needs.changes.outputs.has_python == 'true')
         with:
           languages: ${{ matrix.language }}
           queries: security-and-quality
 
       - uses: github/codeql-action/analyze@v3
+        if: >-
+          (matrix.language == 'javascript-typescript' && needs.changes.outputs.has_javascript == 'true') ||
+          (matrix.language == 'python' && needs.changes.outputs.has_python == 'true')
         with:
           category: /language:${{ matrix.language }}
 
@@ -363,7 +422,10 @@ jobs:
   docker:
     name: Docker · Hadolint + Build + Trivy Scan
     needs: changes
-    if: github.event_name != 'pull_request' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.frontend == 'true' || needs.changes.outputs.backend == 'true'
+    if: >-
+      needs.changes.outputs.has_docker == 'true' &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.docker == 'true' ||
+       needs.changes.outputs.frontend == 'true' || needs.changes.outputs.backend == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -400,7 +462,7 @@ jobs:
 
       - name: Trivy container vulnerability scan
         if: steps.has.outputs.ok == 'true'
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ci/${{ matrix.component }}:${{ github.sha }}
           severity: CRITICAL,HIGH
