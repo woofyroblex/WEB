@@ -112,7 +112,8 @@ jobs:
               print("GEMINI_API_KEY is not configured.")
 
           if not reviews:
-              raise SystemExit("No AI review could be generated. Check GEMINI_API_KEY and the API response above.")
+              print("::warning::Gemini did not return a review. The AI review is optional; continuing with the remaining checks.")
+              exit(0)
 
           body_parts = ["## 🤖 Automated AI Code Review\n"]
           for provider, content in reviews:
