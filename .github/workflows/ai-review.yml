@@ -12,18 +12,19 @@ concurrency:
 
 jobs:
   # ===========================================================================
-  # JOB 1: Automatic AI Code Review (Gemini)
+  # JOB 1: Automatic AI Code Review & Auto-Merge (Gemini Free Tier)
   # ===========================================================================
   ai-review:
     name: AI Code Review (Gemini)
     if: >-
       github.event_name == 'pull_request' &&
       !github.event.pull_request.draft &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
       issues: write
     steps:
@@ -39,13 +40,25 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           python3 - << 'EOF'
-          import os, subprocess, json, urllib.request
+          import os, subprocess, json, urllib.request, re
 
           pr_num = os.environ["PR_NUMBER"]
           base_ref = os.environ["BASE_REF"]
           gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
 
-          # 1. Get PR diff (excluding lockfiles & migrations noise)
+          # 1. Get list of changed files
+          changed_files = subprocess.check_output(
+              ["git", "diff", f"origin/{base_ref}...HEAD", "--name-only"],
+              text=True, errors="replace"
+          ).splitlines()
+
+          # Check for high-risk sensitive paths that should never be auto-merged by AI alone
+          sensitive_patterns = [".github/workflows/", "migrations/", "docker-compose", "Dockerfile"]
+          touches_sensitive_paths = any(
+              any(p in f for p in sensitive_patterns) for f in changed_files
+          )
+
+          # 2. Get PR diff (excluding lockfiles & minified assets noise)
           diff_cmd = [
               "git", "diff", f"origin/{base_ref}...HEAD", "--",
               ".", ":(exclude)*package-lock.json", ":(exclude)*yarn.lock",
@@ -60,71 +73,127 @@ jobs:
           truncated_diff = diff[:max_chars] + ("\n\n...[DIFF TRUNCATED]..." if len(diff) > max_chars else "")
 
           system_prompt = """You are a Principal Full-Stack Engineer reviewing a Pull Request for this stack:
-          - Frontend: React + TypeScript, Recharts
+          - Frontend: React + TypeScript, Vite, Recharts, oxlint
           - Backend: Django + Django REST Framework (DRF), PostgreSQL
           - Async/Jobs: Celery + Redis + Celery Beat
           - Auth & PDF: JWT (SimpleJWT) + WeasyPrint
           - DevOps: Docker + GitHub Actions
 
-          Review the diff for high-confidence issues only:
-          1. Security: JWT token leakage/validation, missing DRF permission_classes, SQL injection/raw queries, XSS, hardcoded secrets.
-          2. Backend & DB: N+1 queries (missing select_related/prefetch_related), missing Django migrations, non-atomic DB transactions.
-          3. Celery & Beat: Non-idempotent tasks, passing ORM objects instead of IDs to .delay(), missing retry/time_limit settings.
-          4. WeasyPrint: Unbounded PDF memory usage, SSRF via external URL fetching in HTML templates, unclosed file handles.
-          5. Frontend (React/TS/Recharts): Hook dependency bugs, `any` types, missing ResponsiveContainer dimensions in Recharts, memory leaks.
+          Review the diff for high-confidence issues:
+          1. Security: JWT token leakage/validation, missing DRF permission_classes, SQL injection, XSS, hardcoded secrets.
+          2. Backend & DB: N+1 queries, missing Django migrations, non-atomic DB transactions.
+          3. Celery & Beat: Non-idempotent tasks, passing ORM objects instead of IDs to .delay(), missing retry/time_limit.
+          4. WeasyPrint: Unbounded PDF memory usage, SSRF via external URL fetching, unclosed file handles.
+          5. Frontend (React/TS/Recharts): Hook dependency bugs, unsafe `any` types, missing dimensions in Recharts, memory leaks.
 
-          Format your output cleanly in Markdown:
+          Format your review cleanly in Markdown:
           - Start with a brief **PR Summary & Risk Level (Low / Medium / High)**.
           - List actionable findings with `File:Line` references and concrete code fixes.
-          - If everything looks solid, state that clearly in 2 sentences."""
+          - If everything looks solid, state that clearly.
+
+          CRITICAL REQUIREMENT: At the very end of your review, provide a JSON verdict block inside triple backticks:
+          ```json
+          {
+            "risk_level": "LOW" | "MEDIUM" | "HIGH",
+            "safe_to_auto_merge": true | false,
+            "confidence": 1-10,
+            "reason": "short explanation"
+          }
+          ```
+          Rule: Set "safe_to_auto_merge": true ONLY if risk_level is LOW and there are zero security risks or breaking changes."""
 
           user_prompt = f"Review this PR diff:\n\n```diff\n{truncated_diff}\n```"
 
           def call_gemini():
-              url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
-              payload = {
-                  "systemInstruction": {"parts": [{"text": system_prompt}]},
-                  "contents": [{"parts": [{"text": user_prompt}]}],
-                  "generationConfig": {
-                      "thinkingConfig": {"thinkingLevel": "low"}
+              # Free tier models available on Google AI Studio
+              candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+              last_err = None
+              for model in candidate_models:
+                  url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+                  payload = {
+                      "systemInstruction": {"parts": [{"text": system_prompt}]},
+                      "contents": [{"parts": [{"text": user_prompt}]}]
                   }
-              }
-              req = urllib.request.Request(
-                  url,
-                  data=json.dumps(payload).encode("utf-8"),
-                  headers={
-                      "Content-Type": "application/json",
-                      "x-goog-api-key": gemini_key
-                  }
-              )
-              with urllib.request.urlopen(req, timeout=180) as resp:
-                  data = json.loads(resp.read().decode("utf-8"))
-                  return "Google Gemini Flash", data["candidates"][0]["content"]["parts"][0]["text"]
+                  req = urllib.request.Request(
+                      url,
+                      data=json.dumps(payload).encode("utf-8"),
+                      headers={
+                          "Content-Type": "application/json",
+                          "x-goog-api-key": gemini_key
+                      }
+                  )
+                  try:
+                      with urllib.request.urlopen(req, timeout=120) as resp:
+                          data = json.loads(resp.read().decode("utf-8"))
+                          text = data["candidates"][0]["content"]["parts"][0]["text"]
+                          return f"Gemini ({model})", text
+                  except Exception as e:
+                      last_err = e
+                      continue
+              raise RuntimeError(f"All Gemini models failed: {last_err}")
 
-          reviews = []
-          # Run Gemini when the repository secret is configured.
-          if gemini_key:
-              try:
-                  reviews.append(call_gemini())
-              except Exception as e:
-                  print(f"Gemini error: {e}")
-          else:
-              print("GEMINI_API_KEY is not configured.")
-
-          if not reviews:
-              print("::warning::Gemini did not return a review. The AI review is optional; continuing with the remaining checks.")
+          if not gemini_key:
+              print("GEMINI_API_KEY is not configured; skipping AI review.")
               exit(0)
 
-          body_parts = ["## 🤖 Automated AI Code Review\n"]
-          for provider, content in reviews:
-              body_parts.append(f"### 🧠 Reviewed by {provider}\n\n{content}\n")
-          body_parts.append("\n---\n*💡 Tip: If this PR has merge conflicts, comment `@ai-bot resolve conflicts` to auto-resolve them!*")
+          try:
+              provider, review_text = call_gemini()
+          except Exception as e:
+              print(f"::warning::Gemini review failed: {e}")
+              exit(0)
 
+          # Parse JSON verdict
+          safe_to_auto_merge = False
+          risk_level = "UNKNOWN"
+          json_match = re.search(r"```json\s*(\{.*?\})\s*```", review_text, re.DOTALL)
+          if json_match:
+              try:
+                  verdict_data = json.loads(json_match.group(1))
+                  risk_level = verdict_data.get("risk_level", "UNKNOWN").upper()
+                  safe_to_auto_merge = bool(verdict_data.get("safe_to_auto_merge", False))
+              except Exception as e:
+                  print(f"Could not parse verdict JSON: {e}")
+
+          # Guardrail: force manual review if touching sensitive workflows/migrations
+          if touches_sensitive_paths:
+              safe_to_auto_merge = False
+
+          body_parts = ["## 🤖 Automated AI Code Review\n"]
+          body_parts.append(f"### 🧠 Reviewed by {provider}\n\n{review_text}\n")
+          
+          if safe_to_auto_merge:
+              body_parts.append("\n---\n✅ **AI Auto-Merge Triggered**: Changes evaluated as safe and low-risk. PR will merge automatically once CI (`ci-ok`) passes!")
+          else:
+              reason = "changes touch critical infrastructure" if touches_sensitive_paths else f"risk level is {risk_level}"
+              body_parts.append(f"\n---\nℹ️ **Manual Review Required**: Auto-merge was skipped because {reason}.")
+
+          body_parts.append("\n*💡 Tip: If this PR has merge conflicts, comment `@ai-bot resolve conflicts` to auto-resolve them!*")
           final_body = "\n".join(body_parts)
+
           with open("/tmp/review.md", "w") as f:
               f.write(final_body)
 
-          subprocess.run(["gh", "pr", "comment", pr_num, "--body-file", "/tmp/review.md"], check=True)
+          # Submit GitHub review & trigger auto-merge if safe
+          if safe_to_auto_merge:
+              subprocess.run([
+                  "gh", "pr", "review", pr_num,
+                  "--approve",
+                  "--body-file", "/tmp/review.md"
+              ], check=True)
+              # Enable auto-merge (squash). Will merge once ci-ok passes.
+              merge_res = subprocess.run([
+                  "gh", "pr", "merge", pr_num,
+                  "--auto",
+                  "--squash"
+              ], capture_output=True, text=True)
+              if merge_res.returncode != 0:
+                  print(f"::warning::gh pr merge --auto exited with: {merge_res.stderr.strip()}")
+          else:
+              subprocess.run([
+                  "gh", "pr", "review", pr_num,
+                  "--comment",
+                  "--body-file", "/tmp/review.md"
+              ], check=True)
           EOF
 
       - name: Check for Merge Conflicts & Notify
@@ -249,33 +318,34 @@ jobs:
 
               resolved_text = None
               if gemini_key:
-                  try:
-                      url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
-                      payload = {
-                          "systemInstruction": {"parts": [{"text": "Return only the complete resolved file content, with no markdown fences or explanation."}]},
-                          "contents": [{"parts": [{"text": prompt}]}],
-                          "generationConfig": {
-                              "thinkingConfig": {"thinkingLevel": "low"}
+                  candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+                  for model in candidate_models:
+                      try:
+                          url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+                          payload = {
+                              "systemInstruction": {"parts": [{"text": "Return only the complete resolved file content, with no markdown fences or explanation."}]},
+                              "contents": [{"parts": [{"text": prompt}]}]
                           }
-                      }
-                      req = urllib.request.Request(
-                          url,
-                          data=json.dumps(payload).encode("utf-8"),
-                          headers={
-                              "Content-Type": "application/json",
-                              "x-goog-api-key": gemini_key
-                          }
-                      )
-                      with urllib.request.urlopen(req, timeout=180) as resp:
-                          data = json.loads(resp.read().decode("utf-8"))
-                          resolved_text = data["candidates"][0]["content"]["parts"][0]["text"]
-                  except Exception as e:
-                      print(f"Gemini failed on {filepath}: {e}")
+                          req = urllib.request.Request(
+                              url,
+                              data=json.dumps(payload).encode("utf-8"),
+                              headers={
+                                  "Content-Type": "application/json",
+                                  "x-goog-api-key": gemini_key
+                              }
+                          )
+                          with urllib.request.urlopen(req, timeout=120) as resp:
+                              data = json.loads(resp.read().decode("utf-8"))
+                              resolved_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                              if resolved_text:
+                                  break
+                      except Exception as e:
+                          print(f"Gemini {model} failed on {filepath}: {e}")
+                          continue
               else:
                   print("GEMINI_API_KEY is not configured; cannot resolve conflicts with Gemini.")
 
               if resolved_text:
-                  # Strip accidental markdown code fences if the LLM added them
                   lines = resolved_text.splitlines()
                   if lines and lines[0].startswith("```"):
                       lines = lines[1:]
