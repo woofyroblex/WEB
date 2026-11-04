@@ -37,13 +37,11 @@ def _record_snapshot(owner_id: int, day: date) -> ProjectSnapshot:
     time_limit=60,
 )
 def record_project_snapshot(owner_id: int) -> int:
-    """Store today's project counts for one account; repeated runs are safe."""
     return _record_snapshot(owner_id, timezone.localdate()).pk
 
 
 @shared_task(time_limit=300, soft_time_limit=270)
 def record_all_project_snapshots() -> int:
-    """Scheduled by Celery Beat once a day to refresh active accounts' charts."""
     day = timezone.localdate()
     owner_ids = (
         User.objects.filter(projects__isnull=False)

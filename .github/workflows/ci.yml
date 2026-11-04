@@ -96,7 +96,6 @@ jobs:
             echo "Python CodeQL will be skipped: no source files are present."
           fi
 
-  # ---------------------------------------------------------------- frontend
   frontend:
     name: Frontend · React + TS + Recharts
     needs: changes
@@ -169,7 +168,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 5
 
-  # ----------------------------------------------------------------- backend
   backend-lint:
     name: Backend · Ruff, Mypy, Migrations, Security
     needs: changes
@@ -365,7 +363,6 @@ jobs:
           path: backend/junit.xml
           reporter: java-junit
 
-  # ---------------------------------------------------------------- security
   security:
     name: Security · Gitleaks, Dependency Audit, CodeQL
     needs: changes
@@ -418,7 +415,6 @@ jobs:
         with:
           category: /language:${{ matrix.language }}
 
-  # ------------------------------------------------------------------ docker
   docker:
     name: Docker · Hadolint + Build + Trivy Scan
     needs: changes
@@ -476,7 +472,6 @@ jobs:
             [[ -f "$f" ]] && docker compose -f "$f" config -q && echo "$f is valid"
           done
 
-  # ---------------------------------------------------- single required check
   ci-ok:
     name: CI passed
     if: always()

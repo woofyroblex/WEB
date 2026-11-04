@@ -1,3 +1,5 @@
+from importlib import import_module
+
 from django.apps import AppConfig
 
 
@@ -6,4 +8,4 @@ class ProjectsConfig(AppConfig):
     name = "projects"
 
     def ready(self):
-        import projects.signals  # noqa: F401
+        import_module("projects.signals")

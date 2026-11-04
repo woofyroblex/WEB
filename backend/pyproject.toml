@@ -8,6 +8,6 @@ extend-exclude = [
 
 [tool.ruff.lint]
 ignore = [
-    "RUF012", # Django models use class attributes for constraints, etc.
-    "EXE001", # manage.py invoked via python manage.py
+    "RUF012",
+    "EXE001",
 ]
