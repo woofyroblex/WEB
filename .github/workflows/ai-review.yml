@@ -1,208 +1,54 @@
 name: Gemini PR Review & Conflict Resolver
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, ready_for_review, reopened]
   issue_comment:
     types: [created]
 
-concurrency:
-  group: ai-bot-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: true
+permissions:
+  contents: read
 
 jobs:
   ai-review:
     name: AI Code Review (Gemini)
     if: >-
-      github.event_name == 'pull_request' &&
+      github.event_name == 'pull_request_target' &&
       !github.event.pull_request.draft &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      github.actor != 'dependabot[bot]'
+      github.event.pull_request.user.login != 'dependabot[bot]'
+    concurrency:
+      group: ai-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
     permissions:
       contents: write
       pull-requests: write
-      issues: write
+      checks: read
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out trusted automation from the PR base
+        uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
-
-      - name: Run Gemini AI Review
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Review the exact PR revision
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.6-flash' }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          python3 - << 'EOF'
-          import os, subprocess, json, urllib.request, re
-
-          pr_num = os.environ["PR_NUMBER"]
-          base_ref = os.environ["BASE_REF"]
-          gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
-
-          changed_files = subprocess.check_output(
-              ["git", "diff", f"origin/{base_ref}...HEAD", "--name-only"],
-              text=True, errors="replace"
-          ).splitlines()
-
-          sensitive_patterns = [".github/workflows/", "migrations/", "docker-compose", "Dockerfile"]
-          touches_sensitive_paths = any(
-              any(p in f for p in sensitive_patterns) for f in changed_files
-          )
-
-          diff_cmd = [
-              "git", "diff", f"origin/{base_ref}...HEAD", "--",
-              ".", ":(exclude)*package-lock.json", ":(exclude)*yarn.lock",
-              ":(exclude)*.min.js", ":(exclude)*.svg"
-          ]
-          diff = subprocess.check_output(diff_cmd, text=True, errors="replace")
-          if not diff.strip():
-              print("No code changes to review.")
-              exit(0)
-
-          max_chars = 45000
-          truncated_diff = diff[:max_chars] + ("\n\n...[DIFF TRUNCATED]..." if len(diff) > max_chars else "")
-
-          system_prompt = """You are a Principal Full-Stack Engineer reviewing a Pull Request for this stack:
-          - Frontend: React + TypeScript, Vite, Recharts, oxlint
-          - Backend: Django + Django REST Framework (DRF), PostgreSQL
-          - Async/Jobs: Celery + Redis + Celery Beat
-          - Auth & PDF: JWT (SimpleJWT) + WeasyPrint
-          - DevOps: Docker + GitHub Actions
-
-          Review the diff for high-confidence issues:
-          1. Security: JWT token leakage/validation, missing DRF permission_classes, SQL injection, XSS, hardcoded secrets.
-          2. Backend & DB: N+1 queries, missing Django migrations, non-atomic DB transactions.
-          3. Celery & Beat: Non-idempotent tasks, passing ORM objects instead of IDs to .delay(), missing retry/time_limit.
-          4. WeasyPrint: Unbounded PDF memory usage, SSRF via external URL fetching, unclosed file handles.
-          5. Frontend (React/TS/Recharts): Hook dependency bugs, unsafe `any` types, missing dimensions in Recharts, memory leaks.
-
-          Format your review cleanly in Markdown:
-          - Start with a brief **PR Summary & Risk Level (Low / Medium / High)**.
-          - List actionable findings with `File:Line` references and concrete code fixes.
-          - If everything looks solid, state that clearly.
-
-          CRITICAL REQUIREMENT: At the very end of your review, provide a JSON verdict block inside triple backticks:
-          ```json
-          {
-            "risk_level": "LOW" | "MEDIUM" | "HIGH",
-            "safe_to_auto_merge": true | false,
-            "confidence": 1-10,
-            "reason": "short explanation"
-          }
-          ```
-          Rule: Set "safe_to_auto_merge": true ONLY if risk_level is LOW and there are zero security risks or breaking changes."""
-
-          user_prompt = f"Review this PR diff:\n\n```diff\n{truncated_diff}\n```"
-
-          def call_gemini():
-              candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
-              last_err = None
-              for model in candidate_models:
-                  url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-                  payload = {
-                      "systemInstruction": {"parts": [{"text": system_prompt}]},
-                      "contents": [{"parts": [{"text": user_prompt}]}]
-                  }
-                  req = urllib.request.Request(
-                      url,
-                      data=json.dumps(payload).encode("utf-8"),
-                      headers={
-                          "Content-Type": "application/json",
-                          "x-goog-api-key": gemini_key
-                      }
-                  )
-                  try:
-                      with urllib.request.urlopen(req, timeout=120) as resp:
-                          data = json.loads(resp.read().decode("utf-8"))
-                          text = data["candidates"][0]["content"]["parts"][0]["text"]
-                          return f"Gemini ({model})", text
-                  except Exception as e:
-                      last_err = e
-                      continue
-              raise RuntimeError(f"All Gemini models failed: {last_err}")
-
-          if not gemini_key:
-              print("GEMINI_API_KEY is not configured; skipping AI review.")
-              exit(0)
-
-          try:
-              provider, review_text = call_gemini()
-          except Exception as e:
-              print(f"::warning::Gemini review failed: {e}")
-              exit(0)
-
-          safe_to_auto_merge = False
-          risk_level = "UNKNOWN"
-          json_match = re.search(r"```json\s*(\{.*?\})\s*```", review_text, re.DOTALL)
-          if json_match:
-              try:
-                  verdict_data = json.loads(json_match.group(1))
-                  risk_level = verdict_data.get("risk_level", "UNKNOWN").upper()
-                  safe_to_auto_merge = bool(verdict_data.get("safe_to_auto_merge", False))
-              except Exception as e:
-                  print(f"Could not parse verdict JSON: {e}")
-
-          if touches_sensitive_paths:
-              safe_to_auto_merge = False
-
-          body_parts = ["## 🤖 Automated AI Code Review\n"]
-          body_parts.append(f"### 🧠 Reviewed by {provider}\n\n{review_text}\n")
-          
-          if safe_to_auto_merge:
-              body_parts.append("\n---\n✅ **AI Auto-Merge Triggered**: Changes evaluated as safe and low-risk. PR will merge automatically once CI (`ci-ok`) passes!")
-          else:
-              reason = "changes touch critical infrastructure" if touches_sensitive_paths else f"risk level is {risk_level}"
-              body_parts.append(f"\n---\nℹ️ **Manual Review Required**: Auto-merge was skipped because {reason}.")
-
-          body_parts.append("\n*💡 Tip: If this PR has merge conflicts, comment `@ai-bot resolve conflicts` to auto-resolve them!*")
-          final_body = "\n".join(body_parts)
-
-          with open("/tmp/review.md", "w") as f:
-              f.write(final_body)
-
-          if safe_to_auto_merge:
-              subprocess.run([
-                  "gh", "pr", "review", pr_num,
-                  "--approve",
-                  "--body-file", "/tmp/review.md"
-              ], check=True)
-              merge_res = subprocess.run([
-                  "gh", "pr", "merge", pr_num,
-                  "--auto",
-                  "--squash"
-              ], capture_output=True, text=True)
-              if merge_res.returncode != 0:
-                  print(f"::warning::gh pr merge --auto exited with: {merge_res.stderr.strip()}")
-          else:
-              subprocess.run([
-                  "gh", "pr", "review", pr_num,
-                  "--comment",
-                  "--body-file", "/tmp/review.md"
-              ], check=True)
-          EOF
-
-      - name: Check for Merge Conflicts & Notify
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if ! git merge --no-commit --no-ff "origin/$BASE_REF" 2>/dev/null; then
-            CONFLICTS=$(git diff --name-only --diff-filter=U)
-            git merge --abort || true
-            gh pr comment "$PR_NUMBER" --body "⚠️ **Merge Conflict Detected** with \`$BASE_REF\` in:
-          \`\`\`
-          $CONFLICTS
-          \`\`\`
-          Reply with **\`@ai-bot resolve conflicts\`** on this PR and I will automatically merge \`$BASE_REF\` and resolve the conflicts for you."
+          if [[ -f scripts/ai_review.py ]]; then
+            python -m scripts.ai_review
           else
-            git merge --abort 2>/dev/null || true
+            echo "Automation is not installed on the base branch yet; manual review is required."
           fi
 
   ai-resolve-conflicts:
@@ -210,153 +56,44 @@ jobs:
     if: >-
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request &&
-      contains(github.event.comment.body, '@ai-bot') &&
-      (
-        github.event.comment.author_association == 'OWNER' ||
-        github.event.comment.author_association == 'MEMBER' ||
-        github.event.comment.author_association == 'COLLABORATOR'
-      )
+      github.event.comment.body == '@ai-bot resolve conflicts' &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+    concurrency:
+      group: ai-resolve-${{ github.event.issue.number }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: write
       pull-requests: write
-      issues: write
+      actions: write
+    env:
+      PR_NUMBER: ${{ github.event.issue.number }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: React to comment with eyes
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh api -X POST "/repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" -f content="eyes"
-
-      - name: Fetch PR metadata
-        id: pr
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PR_JSON=$(gh pr view ${{ github.event.issue.number }} --json headRefName,baseRefName,headRepositoryOwner)
-          HEAD_REF=$(echo "$PR_JSON" | jq -r .headRefName)
-          BASE_REF=$(echo "$PR_JSON" | jq -r .baseRefName)
-          echo "head_ref=$HEAD_REF" >> "$GITHUB_OUTPUT"
-          echo "base_ref=$BASE_REF" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@v7
+      - name: Check out trusted automation
+        uses: actions/checkout@v7
         with:
-          ref: ${{ steps.pr.outputs.head_ref }}
+          ref: ${{ github.sha }}
+          path: automation
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Validate request and fetch PR metadata
+        id: pr
+        working-directory: automation
+        run: python -m scripts.resolve_conflicts prepare
+      - name: Check out the validated PR revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.pr.outputs.head_sha }}
+          path: pull-request
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Merge base branch & resolve conflicts with Gemini
+      - name: Resolve conflicts using trusted automation
+        working-directory: automation
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          BASE_REF: ${{ steps.pr.outputs.base_ref }}
-          HEAD_REF: ${{ steps.pr.outputs.head_ref }}
-          PR_NUMBER: ${{ github.event.issue.number }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin "$BASE_REF" "$HEAD_REF"
-
-          if git merge --no-edit "origin/$BASE_REF"; then
-            git push origin "HEAD:$HEAD_REF"
-            gh pr comment "$PR_NUMBER" --body "✅ Merged \`$BASE_REF\` into \`$HEAD_REF\` cleanly with no conflicts!"
-            exit 0
-          fi
-
-          CONFLICT_FILES=$(git diff --name-only --diff-filter=U)
-          echo "Conflicting files:"
-          echo "$CONFLICT_FILES"
-
-          python3 - << 'EOF'
-          import os, subprocess, json, urllib.request
-
-          gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
-          pr_num = os.environ["PR_NUMBER"]
-          base_ref = os.environ["BASE_REF"]
-          head_ref = os.environ["HEAD_REF"]
-
-          files = subprocess.check_output(["git", "diff", "--name-only", "--diff-filter=U"], text=True).splitlines()
-          resolved_files = []
-          failed_files = []
-
-          for filepath in files:
-              if filepath.endswith(("package-lock.json", "yarn.lock")):
-                  subprocess.run(["git", "checkout", "--theirs", filepath], check=False)
-                  subprocess.run(["git", "add", filepath], check=False)
-                  resolved_files.append(f"{filepath} (lockfile auto-merged)")
-                  continue
-
-              with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-                  content = f.read()
-
-              if len(content) > 60000:
-                  failed_files.append(f"{filepath} (file too large for safe AI resolution)")
-                  continue
-
-              prompt = f"""Resolve the Git merge conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) in the file `{filepath}` from a React+TypeScript / Django+DRF+Celery repository.
-          Preserve both sides' features, imports, types, and logic cleanly without syntax errors.
-          Return ONLY the complete resolved file content with NO markdown code fences (` ``` `) and NO explanations.
-
-          FILE CONTENT WITH CONFLICTS:
-          {content}"""
-
-              resolved_text = None
-              if gemini_key:
-                  candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
-                  for model in candidate_models:
-                      try:
-                          url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-                          payload = {
-                              "systemInstruction": {"parts": [{"text": "Return only the complete resolved file content, with no markdown fences or explanation."}]},
-                              "contents": [{"parts": [{"text": prompt}]}]
-                          }
-                          req = urllib.request.Request(
-                              url,
-                              data=json.dumps(payload).encode("utf-8"),
-                              headers={
-                                  "Content-Type": "application/json",
-                                  "x-goog-api-key": gemini_key
-                              }
-                          )
-                          with urllib.request.urlopen(req, timeout=120) as resp:
-                              data = json.loads(resp.read().decode("utf-8"))
-                              resolved_text = data["candidates"][0]["content"]["parts"][0]["text"]
-                              if resolved_text:
-                                  break
-                      except Exception as e:
-                          print(f"Gemini {model} failed on {filepath}: {e}")
-                          continue
-              else:
-                  print("GEMINI_API_KEY is not configured; cannot resolve conflicts with Gemini.")
-
-              if resolved_text:
-                  lines = resolved_text.splitlines()
-                  if lines and lines[0].startswith("```"):
-                      lines = lines[1:]
-                  if lines and lines[-1].startswith("```"):
-                      lines = lines[:-1]
-                  cleaned = "\n".join(lines) + "\n"
-
-                  if "<<<<<<<" not in cleaned and ">>>>>>>" not in cleaned:
-                      with open(filepath, "w", encoding="utf-8") as f:
-                          f.write(cleaned)
-                      subprocess.run(["git", "add", filepath], check=True)
-                      resolved_files.append(filepath)
-                  else:
-                      failed_files.append(f"{filepath} (markers still present)")
-              else:
-                  failed_files.append(filepath)
-
-          if failed_files:
-              subprocess.run(["git", "merge", "--abort"], check=False)
-              msg = "❌ **AI Conflict Resolution Aborted**\nCould not safely auto-resolve:\n" + "\n".join(f"- `{x}`" for x in failed_files)
-              subprocess.run(["gh", "pr", "comment", pr_num, "--body", msg], check=True)
-              exit(1)
-
-          subprocess.run(["git", "commit", "-m", f"chore: AI-resolved merge conflicts with {base_ref}"], check=True)
-          subprocess.run(["git", "push", "origin", f"HEAD:{head_ref}"], check=True)
-
-          msg = "✅ **Merge Conflicts Resolved by AI!**\nMerged `" + base_ref + "` into `" + head_ref + "` and resolved:\n" + "\n".join(f"- `{x}`" for x in resolved_files)
-          subprocess.run(["gh", "pr", "comment", pr_num, "--body", msg], check=True)
-          EOF
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.6-flash' }}
+        run: python -m scripts.resolve_conflicts resolve "$GITHUB_WORKSPACE/pull-request"

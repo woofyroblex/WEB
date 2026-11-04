@@ -88,9 +88,11 @@ jobs:
               exit 1
             fi
           done
-          echo "frontend=true" >> "$GITHUB_OUTPUT"
-          echo "backend=true" >> "$GITHUB_OUTPUT"
-          echo "docker=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "frontend=true"
+            echo "backend=true"
+            echo "docker=true"
+          } >> "$GITHUB_OUTPUT"
 
           if git ls-files -- '*.js' '*.jsx' '*.ts' '*.tsx' | grep . > /dev/null; then
             echo "javascript=true" >> "$GITHUB_OUTPUT"
