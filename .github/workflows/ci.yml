@@ -21,10 +21,30 @@ env:
   FORCE_COLOR: '1'
 
 jobs:
+  workflow-checks:
+    name: Workflow policy and syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -r .github/requirements-ci.txt
+      - run: python -m unittest discover -s scripts/tests -v
+      - run: ruff check scripts && ruff format --check scripts
+      - name: Validate GitHub Actions workflows
+        run: docker run --rm --volume "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.12
+
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       frontend: ${{ steps.filter.outputs.frontend }}
       backend: ${{ steps.filter.outputs.backend }}
@@ -44,52 +64,42 @@ jobs:
           filters: |
             frontend:
               - 'frontend/**'
-              - '.github/workflows/ci.yml'
+              - '.github/**'
             backend:
               - 'backend/**'
-              - '.github/workflows/ci.yml'
+              - '.github/**'
             docker:
               - '**/Dockerfile*'
               - '**/docker-compose*.yml'
+              - '**/docker-compose*.yaml'
+              - '**/.dockerignore'
               - '.dockerignore'
-              - '.github/workflows/ci.yml'
+              - '.github/**'
 
       - name: Detect available components
         id: components
         shell: bash
         run: |
-          if [[ -f frontend/package.json && -f frontend/package-lock.json ]]; then
-            echo "frontend=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "frontend=false" >> "$GITHUB_OUTPUT"
-            echo "Frontend checks will be skipped: frontend/package.json and package-lock.json are required."
-          fi
+          for file in frontend/package.json frontend/package-lock.json \
+            backend/requirements.txt backend/pyproject.toml \
+            frontend/Dockerfile backend/Dockerfile docker-compose.yml; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error::Required project file is missing: $file"
+              exit 1
+            fi
+          done
+          echo "frontend=true" >> "$GITHUB_OUTPUT"
+          echo "backend=true" >> "$GITHUB_OUTPUT"
+          echo "docker=true" >> "$GITHUB_OUTPUT"
 
-          if [[ -f backend/requirements.txt || -f backend/pyproject.toml ]]; then
-            echo "backend=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "backend=false" >> "$GITHUB_OUTPUT"
-            echo "Backend checks will be skipped: backend/requirements.txt or backend/pyproject.toml is required."
-          fi
-
-          if find . -path './.git' -prune -o -type f \
-            \( -name 'Dockerfile*' -o -name 'docker-compose*.yml' \
-            -o -name 'docker-compose*.yaml' -o -name '.dockerignore' \) \
-            -print -quit | grep -q .; then
-            echo "docker=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "docker=false" >> "$GITHUB_OUTPUT"
-            echo "Docker checks will be skipped: no Dockerfile or compose file is present."
-          fi
-
-          if git ls-files -- '*.js' '*.jsx' '*.ts' '*.tsx' | grep -q .; then
+          if git ls-files -- '*.js' '*.jsx' '*.ts' '*.tsx' | grep . > /dev/null; then
             echo "javascript=true" >> "$GITHUB_OUTPUT"
           else
             echo "javascript=false" >> "$GITHUB_OUTPUT"
             echo "JavaScript/TypeScript CodeQL will be skipped: no source files are present."
           fi
 
-          if git ls-files -- '*.py' | grep -q .; then
+          if git ls-files -- '*.py' | grep . > /dev/null; then
             echo "python=true" >> "$GITHUB_OUTPUT"
           else
             echo "python=false" >> "$GITHUB_OUTPUT"
@@ -124,27 +134,17 @@ jobs:
       - name: Install dependencies
         run: npm ci --prefer-offline --no-audit --no-fund
 
-      - name: Lint (ESLint)
-        run: npm run lint --if-present
+      - name: Lint (oxlint)
+        run: npm run lint
 
       - name: Format check (Prettier)
-        run: npx --no-install prettier --check "src/**/*.{ts,tsx,css,json}" || echo "::warning::Prettier formatting issues found"
+        run: npm run format:check
 
-      - name: TypeScript strict typecheck
-        run: |
-          if npm run | grep -q 'typecheck'; then
-            npm run typecheck
-          else
-            npx --no-install tsc --noEmit --pretty
-          fi
+      - name: TypeScript project typecheck
+        run: npm run typecheck
 
-      - name: Unit tests (Vitest / Jest)
-        run: |
-          if npm run | grep -q ' test'; then
-            npm test -- --coverage --watch=false --passWithNoTests 2>/dev/null || npm test -- --run --coverage --passWithNoTests
-          else
-            echo "No test script configured; skipping."
-          fi
+      - name: Unit tests with coverage
+        run: npm run test:coverage
 
       - name: Production build check
         run: npm run build
@@ -158,6 +158,14 @@ jobs:
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
+      - name: Keep frontend coverage report
+        if: always() && hashFiles('frontend/coverage/**') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-coverage
+          path: frontend/coverage
+          retention-days: 7
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
@@ -165,7 +173,7 @@ jobs:
           path: |
             frontend/dist
             frontend/build
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 5
 
   backend-lint:
@@ -205,9 +213,7 @@ jobs:
       - name: Install dependencies + linters
         run: |
           python -m pip install --upgrade pip
-          if [[ -f requirements-dev.txt ]]; then pip install -r requirements-dev.txt; fi
-          if [[ -f requirements.txt ]]; then pip install -r requirements.txt; else pip install -e '.[dev]' || pip install -e .; fi
-          pip install ruff mypy django-stubs djangorestframework-stubs types-requests bandit
+          pip install -r requirements-dev.txt
 
       - name: Ruff lint
         run: ruff check . --output-format=github
@@ -216,11 +222,10 @@ jobs:
         run: ruff format --check .
 
       - name: Bandit SAST (Python security check)
-        run: bandit -r . -x ./tests,./venv,./.venv,./*/migrations -ll -ii || echo "::warning::Bandit reported findings"
+        run: bandit -r config projects -x projects/tests.py,projects/migrations -ll -ii
 
       - name: Mypy typecheck
-        continue-on-error: true
-        run: mypy . --ignore-missing-imports
+        run: mypy .
 
       - name: Check for missing Django migrations
         run: python manage.py makemigrations --check --dry-run --noinput
@@ -299,9 +304,7 @@ jobs:
       - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
-          if [[ -f requirements-dev.txt ]]; then pip install -r requirements-dev.txt; fi
-          if [[ -f requirements.txt ]]; then pip install -r requirements.txt; else pip install -e '.[dev]' || pip install -e .; fi
-          pip install pytest pytest-django pytest-cov pytest-xdist coverage
+          pip install -r requirements-dev.txt
 
       - name: Run migrations & Django system check
         run: |
@@ -329,22 +332,11 @@ jobs:
           print(f'Discovered {len(tasks)} custom Celery tasks and {len(beat_schedule)} Beat schedules.')
           "
 
-      - name: Validate DRF OpenAPI Schema (if drf-spectacular installed)
-        run: |
-          if python -c "import drf_spectacular" 2>/dev/null; then
-            python manage.py spectacular --validate --fail-on-warn || python manage.py spectacular --validate
-          else
-            echo "drf-spectacular not installed; skipping schema check."
-          fi
-
       - name: Run tests with coverage
         run: |
-          if [[ -f pytest.ini || -f conftest.py ]] || grep -q '\[tool.pytest' pyproject.toml 2>/dev/null; then
-            pytest -n auto --cov=. --cov-report=xml --cov-report=term-missing --junitxml=junit.xml -q
-          else
-            coverage run manage.py test --parallel auto --noinput
-            coverage xml
-          fi
+          coverage run --source=config,projects manage.py test --noinput
+          coverage xml
+          coverage report
 
       - name: Upload coverage (Codecov)
         if: always() && hashFiles('backend/coverage.xml') != ''
@@ -355,13 +347,13 @@ jobs:
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
-      - name: Publish test report
-        if: always() && hashFiles('backend/junit.xml') != ''
-        uses: dorny/test-reporter@v3
+      - name: Keep backend coverage report
+        if: always() && hashFiles('backend/coverage.xml') != ''
+        uses: actions/upload-artifact@v7
         with:
-          name: Backend tests
-          path: backend/junit.xml
-          reporter: java-junit
+          name: backend-coverage
+          path: backend/coverage.xml
+          retention-days: 7
 
   security:
     name: Security · Gitleaks, Dependency Audit, CodeQL
@@ -391,14 +383,13 @@ jobs:
       - name: Python dependency audit (pip-audit)
         if: matrix.language == 'python' && hashFiles('backend/requirements.txt') != ''
         uses: pypa/gh-action-pip-audit@v1.1.0
-        continue-on-error: true
         with:
           inputs: backend/requirements.txt
 
       - name: Frontend dependency audit (npm audit)
         if: matrix.language == 'javascript-typescript' && hashFiles('frontend/package-lock.json') != ''
         working-directory: frontend
-        run: npm audit --omit=dev --audit-level=high || echo "::warning::npm audit found high/critical issues"
+        run: npm audit --audit-level=high
 
       - uses: github/codeql-action/init@v4
         if: >-
@@ -463,21 +454,23 @@ jobs:
           image-ref: ci/${{ matrix.component }}:${{ github.sha }}
           severity: CRITICAL,HIGH
           ignore-unfixed: true
-          exit-code: '0'
+          exit-code: '1'
 
       - name: Validate docker-compose config
         if: matrix.component == 'backend'
         run: |
-          for f in docker-compose*.yml; do
-            [[ -f "$f" ]] && docker compose -f "$f" config -q && echo "$f is valid"
-          done
+          docker compose -f docker-compose.yml config -q
 
   ci-ok:
     name: CI passed
     if: always()
-    needs: [frontend, backend-lint, backend-test, security, docker]
+    needs: [changes, workflow-checks, frontend, backend-lint, backend-test, security, docker]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all upstream jobs succeeded or were skipped
         run: |
-          echo '${{ toJSON(needs) }}' | jq -e 'to_entries | all(.value.result == "success" or .value.result == "skipped")'
+          echo '${{ toJSON(needs) }}' | jq -e '
+            .changes.result == "success" and
+            .["workflow-checks"].result == "success" and
+            .security.result == "success" and
+            (to_entries | all(.value.result == "success" or .value.result == "skipped"))'

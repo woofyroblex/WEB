@@ -11,3 +11,14 @@ ignore = [
     "RUF012",
     "EXE001",
 ]
+
+[tool.mypy]
+plugins = ["mypy_django_plugin.main", "mypy_drf_plugin.main"]
+exclude = ["^projects/migrations/"]
+
+[tool.django-stubs]
+django_settings_module = "config.settings"
+
+[[tool.mypy.overrides]]
+module = ["celery.*", "weasyprint.*"]
+ignore_missing_imports = true
