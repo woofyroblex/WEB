@@ -1,26 +1,45 @@
 # WEB Project Hub
 
-A small full-stack project dashboard built with React, TypeScript, Django REST Framework, and PostgreSQL. It includes JWT sign-in, project tracking, Recharts, PDF exports, and Celery background jobs scheduled by Celery Beat.
+A full-stack dashboard for tracking projects, monitoring progress, and exporting reports.
 
-## Run the whole app
+## Features
 
-Requirements: Docker Desktop with Docker Compose.
+- Project overview with status summaries and charts
+- Kanban board and searchable project table
+- User accounts with private project data
+- Scheduled project snapshots
+- PDF, CSV, and JSON exports
+
+## Tech stack
+
+- **Frontend:** React, TypeScript, Vite, and Recharts
+- **Backend:** Django REST Framework and JWT authentication
+- **Services:** PostgreSQL, Redis, and Celery
+
+## Quick start
+
+You need Docker Desktop with Docker Compose.
 
 ```sh
 cp .env.example .env
 docker compose up --build
 ```
 
-Open [http://localhost:5173](http://localhost:5173), create an account, and start adding projects. The API is available at [http://localhost:8001/api/health/](http://localhost:8001/api/health/); Django admin is at [http://localhost:8001/admin/](http://localhost:8001/admin/).
+Open the dashboard at [http://localhost:5173](http://localhost:5173). The API health check is at [http://localhost:8001/api/health/](http://localhost:8001/api/health/), and Django admin is at [http://localhost:8001/admin/](http://localhost:8001/admin/).
 
-The compose stack starts PostgreSQL, Redis, the Django API, a Celery worker, Celery Beat, and the React dashboard. The dashboard calls the API through the frontend web server, so browser requests stay on one origin.
+Docker Compose starts the frontend, API, PostgreSQL, Redis, a Celery worker, and Celery Beat.
 
-## Local development without Docker for the app
+## Local development
 
-Start PostgreSQL and Redis with `docker compose up db redis`. Set the database and Redis URLs for the Django terminal, then run the services in separate terminals:
+Run PostgreSQL and Redis with Docker:
 
 ```sh
-brew install weasyprint
+docker compose up -d db redis
+```
+
+In one terminal, install the backend dependencies and start Django:
+
+```sh
 cd backend
 python3.12 -m venv .venv
 source .venv/bin/activate
@@ -32,26 +51,18 @@ python manage.py migrate
 python manage.py runserver 0.0.0.0:8001
 ```
 
+WeasyPrint's system dependencies must also be installed for your operating system to generate PDF reports.
+
+In another terminal, start the frontend:
+
 ```sh
 cd frontend
 npm ci
 npm run dev
 ```
 
-The Vite server forwards `/api` requests to `http://localhost:8001`. Set `VITE_DEV_API_TARGET` when the API runs at a different address. Set `VITE_API_BASE_URL` only when using a different API URL.
+Vite forwards `/api` requests to `http://localhost:8001`. Set `VITE_DEV_API_TARGET` if the API uses a different address.
 
-## Main API routes
+## Configuration
 
-- `POST /api/auth/register/` creates an account.
-- `POST /api/auth/token/` returns a JWT access and refresh token.
-- `GET|POST /api/projects/` lists or creates the signed-in user's projects.
-- `GET|PATCH|DELETE /api/projects/{id}/` reads or updates one of the user's projects.
-- `GET /api/dashboard/` returns counts for the chart and summary cards.
-- `POST /api/dashboard/snapshot/` queues a Celery snapshot task.
-- `GET /api/reports/projects.pdf` downloads a PDF of the signed-in user's projects.
-
-Project routes require the `Authorization: Bearer <access-token>` header. Each account can only access its own projects and snapshots.
-
-## Checks
-
-GitHub Actions runs the frontend typecheck/build, backend lint and Django checks, database-backed backend tests, security scans, and Docker builds when their project files are present. The checks are defined in `.github/workflows/ci.yml`.
+Copy `.env.example` to `.env` before starting Docker Compose. Its values are for local development; use unique secrets and passwords for any deployed environment.
