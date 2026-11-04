@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from projects.models import Project, ProjectSnapshot
+from projects.models import Project, ProjectSnapshot, UserProfile
 from projects.tasks import record_project_snapshot
 
 User = get_user_model()
@@ -94,3 +94,151 @@ class ProjectApiTests(TestCase):
             ProjectSnapshot.objects.get(owner=self.user).completed_count,
             1,
         )
+
+
+class AccountRoleApiTests(TestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username="workspace-admin",
+            email="admin@example.com",
+            password="secure-admin-password-2026",
+        )
+        self.admin.profile.role = UserProfile.Role.ADMIN
+        self.admin.profile.save(update_fields=("role", "updated_at"))
+        self.user = User.objects.create_user(
+            username="member",
+            email="member@example.com",
+            password="secure-member-password-2026",
+        )
+        self.client = APIClient()
+
+    def test_registration_keeps_user_role_and_normalizes_email(self):
+        response = self.client.post(
+            "/api/auth/register/",
+            {
+                "username": "new-member",
+                "email": "NEW-MEMBER@EXAMPLE.COM",
+                "password": "unrelated-password-2026",
+                "role": "admin",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        created_user = User.objects.get(username="new-member")
+        self.assertEqual(created_user.email, "new-member@example.com")
+        self.assertEqual(created_user.profile.role, UserProfile.Role.USER)
+
+    def test_registration_rejects_case_insensitive_duplicate_email(self):
+        response = self.client.post(
+            "/api/auth/register/",
+            {
+                "username": "another-member",
+                "email": "MEMBER@example.com",
+                "password": "unrelated-password-2026",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("email", response.data)
+
+    def test_registration_rejects_password_similar_to_account_details(self):
+        response = self.client.post(
+            "/api/auth/register/",
+            {
+                "username": "similar-name",
+                "email": "similar@example.com",
+                "password": "similar-name",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("password", response.data)
+
+    def test_current_user_response_includes_role(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get("/api/auth/me/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["role"], UserProfile.Role.ADMIN)
+
+    def test_regular_user_cannot_access_admin_endpoints(self):
+        self.client.force_authenticate(self.user)
+
+        dashboard = self.client.get("/api/admin/dashboard/")
+        users = self.client.get("/api/admin/users/")
+        role = self.client.patch(
+            f"/api/admin/users/{self.user.pk}/role/",
+            {"role": "admin"},
+            format="json",
+        )
+
+        self.assertEqual(dashboard.status_code, 403)
+        self.assertEqual(users.status_code, 403)
+        self.assertEqual(role.status_code, 403)
+
+    def test_admin_dashboard_counts_all_projects_without_returning_details(self):
+        Project.objects.create(owner=self.admin, title="Admin work")
+        Project.objects.create(owner=self.user, title="Member work")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get("/api/admin/dashboard/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["total_users"], 2)
+        self.assertEqual(response.data["admin_users"], 1)
+        self.assertEqual(response.data["total_projects"], 2)
+        self.assertNotIn("Admin work", str(response.data))
+        self.assertNotIn("Member work", str(response.data))
+
+    def test_admin_can_promote_and_demote_an_account(self):
+        self.client.force_authenticate(self.admin)
+        url = f"/api/admin/users/{self.user.pk}/role/"
+
+        promote = self.client.patch(url, {"role": "admin"}, format="json")
+        self.assertEqual(promote.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.profile.role, UserProfile.Role.ADMIN)
+
+        demote = self.client.patch(url, {"role": "user"}, format="json")
+        self.assertEqual(demote.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.profile.role, UserProfile.Role.USER)
+
+    def test_role_update_requires_a_role(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.patch(
+            f"/api/admin/users/{self.user.pk}/role/",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("role", response.data)
+
+    def test_admin_cannot_remove_own_role_or_demote_django_staff(self):
+        staff_user = User.objects.create_user(
+            username="staff-admin",
+            email="staff@example.com",
+            password="secure-staff-password-2026",
+            is_staff=True,
+        )
+        self.client.force_authenticate(self.admin)
+
+        self_role = self.client.patch(
+            f"/api/admin/users/{self.admin.pk}/role/",
+            {"role": "user"},
+            format="json",
+        )
+        staff_role = self.client.patch(
+            f"/api/admin/users/{staff_user.pk}/role/",
+            {"role": "user"},
+            format="json",
+        )
+
+        self.assertEqual(self_role.status_code, 400)
+        self.assertEqual(staff_role.status_code, 400)

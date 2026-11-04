@@ -1,5 +1,5 @@
 from django.contrib.auth import get_user_model
-from django.db.models import Count, Q
+from django.db.models import Count
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.template.loader import render_to_string
@@ -114,11 +114,7 @@ class AdminDashboardView(APIView):
             row["status"]: row["total"]
             for row in Project.objects.values("status").annotate(total=Count("id"))
         }
-        admin_count = User.objects.filter(
-            Q(profile__role=UserProfile.Role.ADMIN)
-            | Q(is_staff=True)
-            | Q(is_superuser=True)
-        ).distinct().count()
+        admin_count = UserProfile.objects.filter(role=UserProfile.Role.ADMIN).count()
         return Response(
             {
                 "total_users": User.objects.count(),
@@ -147,11 +143,10 @@ class AdminUserRoleView(APIView):
     permission_classes = (IsAuthenticated, IsProjectHubAdmin)
 
     def patch(self, request, user_id: int):
-        user = get_object_or_404(User.objects.select_related("profile"), pk=user_id)
+        user = get_object_or_404(User, pk=user_id)
         serializer = UserRoleUpdateSerializer(
             user,
             data=request.data,
-            partial=True,
             context={"request": request},
         )
         serializer.is_valid(raise_exception=True)
