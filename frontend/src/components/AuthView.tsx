@@ -1,188 +1,154 @@
 import { useState } from "react";
-import type { FormEvent } from "react";
-import type { WorkspaceConfig } from "../types";
+import type { FormEvent, MouseEvent } from "react";
+
+export type AuthMode = "login" | "register";
 
 type AuthViewProps = {
+  mode: AuthMode;
+  isBusy: boolean;
+  error: string;
+  onNavigate: (mode: AuthMode) => void;
   onSignIn: (username: string, password: string) => Promise<void>;
   onRegister: (
     username: string,
     email: string,
     password: string,
   ) => Promise<void>;
-  onEnterDemoMode: () => void;
-  isBusy: boolean;
-  error: string;
-  message: string;
-  config: WorkspaceConfig;
 };
 
 export default function AuthView({
-  onSignIn,
-  onRegister,
-  onEnterDemoMode,
+  mode,
   isBusy,
   error,
-  message,
-  config,
+  onNavigate,
+  onSignIn,
+  onRegister,
 }: AuthViewProps) {
-  const [isRegistering, setIsRegistering] = useState(false);
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const registering = mode === "register";
 
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    if (isRegistering) {
-      await onRegister(username, email, password);
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (registering) {
+      await onRegister(username.trim(), email.trim(), password);
     } else {
-      await onSignIn(username, password);
+      await onSignIn(username.trim(), password);
     }
   }
 
+  function followLink(event: MouseEvent<HTMLAnchorElement>, next: AuthMode) {
+    event.preventDefault();
+    onNavigate(next);
+  }
+
   return (
-    <main className="auth-shell">
-      <section className="auth-card">
-        <div className="brand-lockup">
-          <span className="brand-mark">W</span>
-          <span className="brand-name">
-            WEB<span className="brand-dot">.</span>
-          </span>
-        </div>
-
-        <div className="auth-intro">
-          <span className="eyebrow">CLEAN & ADAPTIVE PLATFORM</span>
-          <h1>{isRegistering ? "Create your workspace" : "Welcome back"}</h1>
+    <main className="auth-page">
+      <section className="auth-story" aria-label="About Project Hub">
+        <a className="brand brand-light" href="/login" onClick={(event) => followLink(event, "login")}>
+          <span className="brand-symbol">W</span>
+          <span>Project Hub</span>
+        </a>
+        <div className="auth-story-copy">
+          <span className="overline">A calmer way to work</span>
+          <h1>Make progress visible.</h1>
           <p>
-            {config.tagline ||
-              "Keep work moving and see what your team is building."}
+            Keep your projects moving with one clear view of priorities,
+            ownership, and what is next.
           </p>
+          <div className="story-note">
+            <span className="story-note-icon" aria-hidden="true">✓</span>
+            <span>One workspace, with access tailored to your role.</span>
+          </div>
         </div>
+        <div className="auth-story-footer">PROJECT HUB <span>·</span> WORKSPACE</div>
+      </section>
 
-        {error && (
-          <div className="form-error" role="alert">
-            {error}
+      <section className="auth-main">
+        <div className="auth-card">
+          <a className="brand brand-dark auth-mobile-brand" href="/login" onClick={(event) => followLink(event, "login")}>
+            <span className="brand-symbol">W</span>
+            <span>Project Hub</span>
+          </a>
+          <div className="auth-heading">
+            <span className="overline">{registering ? "Get started" : "Welcome back"}</span>
+            <h2>{registering ? "Create your account" : "Sign in to Project Hub"}</h2>
+            <p>
+              {registering
+                ? "Set up your account to start managing your projects."
+                : "Enter your details to open your workspace."}
+            </p>
           </div>
-        )}
-        {message && (
-          <div className="form-success" role="status">
-            {message}
-          </div>
-        )}
 
-        <form className="auth-form" onSubmit={handleSubmit}>
-          <label>
-            Username
-            <input
-              autoComplete="username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder="e.g. rijin"
-              required
-            />
-          </label>
+          {error && <div className="form-alert" role="alert">{error}</div>}
 
-          {isRegistering && (
-            <label>
-              Email address
+          <form className="auth-form" onSubmit={handleSubmit}>
+            <label className="field-label" htmlFor="username">
+              Username
               <input
-                autoComplete="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="name@example.com"
+                id="username"
+                autoComplete="username"
+                autoFocus
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                placeholder="Your username"
                 required
               />
             </label>
-          )}
 
-          <label>
-            Password
-            <input
-              autoComplete={isRegistering ? "new-password" : "current-password"}
-              type="password"
-              minLength={8}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
-              required
-            />
-          </label>
+            {registering && (
+              <label className="field-label" htmlFor="email">
+                Email address
+                <input
+                  id="email"
+                  autoComplete="email"
+                  type="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  placeholder="you@example.com"
+                  required
+                />
+              </label>
+            )}
 
-          <button
-            className="button button-primary button-wide"
-            disabled={isBusy}
-            type="submit"
-          >
-            {isBusy
-              ? "Please wait…"
-              : isRegistering
-                ? "Create Workspace"
-                : "Sign In with API"}
-          </button>
-        </form>
+            <label className="field-label" htmlFor="password">
+              Password
+              <input
+                id="password"
+                autoComplete={registering ? "new-password" : "current-password"}
+                type="password"
+                minLength={8}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder={registering ? "At least 8 characters" : "Your password"}
+                required
+              />
+            </label>
 
-        <div className="auth-divider">
-          <span>OR</span>
-        </div>
+            <button className="button button-primary auth-submit" disabled={isBusy} type="submit">
+              {isBusy
+                ? registering ? "Creating account…" : "Signing in…"
+                : registering ? "Create account" : "Sign in"}
+              <span aria-hidden="true">→</span>
+            </button>
+          </form>
 
-        <button
-          className="button button-demo button-wide"
-          onClick={onEnterDemoMode}
-          type="button"
-          title="Instant access with interactive sample data"
-        >
-          <span>⚡</span> Explore Instant Demo / Guest Mode
-        </button>
-
-        <p className="auth-switch">
-          {isRegistering ? "Already have an account?" : "Need a new account?"}
-          <button
-            className="text-button"
-            onClick={() => setIsRegistering((curr) => !curr)}
-            type="button"
-          >
-            {isRegistering ? "Sign in" : "Create one"}
-          </button>
-        </p>
-
-        <div className="auth-footnote">
-          <span>Private workspace</span>
-          <span>·</span>
-          <span>Adaptive domain support</span>
-        </div>
-      </section>
-
-      <aside className="auth-aside">
-        <div className="aside-orbit orbit-one" />
-        <div className="aside-orbit orbit-two" />
-        <div className="aside-content">
-          <span className="eyebrow">ZERO-SETUP FLEXIBLE STACK</span>
-          <h2>Ready for any problem statement.</h2>
-          <p>
-            Clean architecture built to pivot smoothly across hackathons,
-            business tools, data pipelines, and full-stack products.
+          <p className="auth-switch">
+            {registering ? "Already have an account?" : "New to Project Hub?"}{" "}
+            {registering ? (
+              <a href="/login" onClick={(event) => followLink(event, "login")}>Sign in</a>
+            ) : (
+              <a href="/register" onClick={(event) => followLink(event, "register")}>Create an account</a>
+            )}
           </p>
-          <div className="aside-features">
-            <div className="aside-feature-item">
-              <span className="aside-check">✓</span>
-              <span>Kanban Board & Tabular Data Grid</span>
-            </div>
-            <div className="aside-feature-item">
-              <span className="aside-check">✓</span>
-              <span>Real-time Search & Priority Filters</span>
-            </div>
-            <div className="aside-feature-item">
-              <span className="aside-check">✓</span>
-              <span>1-Click Domain Customization & Dark Mode</span>
-            </div>
-          </div>
-          <div className="aside-note">
-            <span className="note-dot" />
-            Django REST API + Local-first hybrid fallback
-          </div>
+
+          <p className="role-note">
+            Account access is assigned by an administrator. New accounts start with the user role.
+          </p>
         </div>
-        <span className="aside-index">WEB · FLEXIBLE PLATFORM</span>
-      </aside>
+        <div className="auth-legal">Secure sign-in <span>·</span> Project Hub</div>
+      </section>
     </main>
   );
 }
