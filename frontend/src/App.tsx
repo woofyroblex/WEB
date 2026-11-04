@@ -1,45 +1,24 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import type { FormEvent } from "react";
 import AuthView from "./components/AuthView";
-import ItemModal from "./components/ItemModal";
-import KanbanBoard from "./components/KanbanBoard";
-import MetricCards from "./components/MetricCards";
-import ProjectTable from "./components/ProjectTable";
-import Sidebar from "./components/Sidebar";
-import TopNavbar from "./components/TopNavbar";
-import WorkspaceSettingsModal from "./components/WorkspaceSettingsModal";
-import {
-  DEFAULT_WORKSPACE_CONFIG,
-  encodeProjectDescription,
-  exportProjectsToCSV,
-  exportProjectsToJSON,
-  INITIAL_DEMO_DASHBOARD,
-  INITIAL_DEMO_PROJECTS,
-  parseProjectMetadata,
-} from "./mockData";
+import type { AuthMode } from "./components/AuthView";
 import type {
-  ApiErrorBody,
-  DashboardData,
-  DomainPreset,
-  Priority,
+  AdminDashboard,
+  AdminUser,
+  AuthTokens,
+  DashboardSummary,
   Project,
   ProjectStatus,
-  TokenPair,
-  ViewMode,
-  WorkspaceConfig,
+  Role,
+  User,
+  UserDashboard,
 } from "./types";
 import "./App.css";
 
-const ProjectChart = lazy(() => import("./ProjectChart"));
-
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || "/api").replace(
-  /\/$/,
-  "",
-);
-const SESSION_KEY = "web-project-hub-session";
-const USER_KEY = "web-project-hub-user";
-const CONFIG_KEY = "web-workspace-config";
-const DEMO_PROJECTS_KEY = "web-demo-projects";
-const DEMO_MODE_KEY = "web-is-demo-mode";
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
+const SESSION_KEY = "project-hub-session";
+type Route = AuthMode | "dashboard";
+type ProjectDraft = Pick<Project, "title" | "description" | "status">;
 
 class ApiError extends Error {
   status: number;
@@ -51,56 +30,60 @@ class ApiError extends Error {
   }
 }
 
-function readSavedTokens(): TokenPair | null {
+function readTokens(): AuthTokens | null {
   try {
     const value = sessionStorage.getItem(SESSION_KEY);
-    return value ? (JSON.parse(value) as TokenPair) : null;
+    return value ? (JSON.parse(value) as AuthTokens) : null;
   } catch {
     return null;
   }
 }
 
-function readSavedConfig(): WorkspaceConfig {
-  try {
-    const value = localStorage.getItem(CONFIG_KEY);
-    return value
-      ? { ...DEFAULT_WORKSPACE_CONFIG, ...JSON.parse(value) }
-      : DEFAULT_WORKSPACE_CONFIG;
-  } catch {
-    return DEFAULT_WORKSPACE_CONFIG;
-  }
+function routeFromPath(): Route {
+  if (window.location.pathname === "/register") return "register";
+  if (window.location.pathname === "/dashboard") return "dashboard";
+  return "login";
 }
 
-function readDemoProjects(): Project[] {
-  try {
-    const value = localStorage.getItem(DEMO_PROJECTS_KEY);
-    if (value) {
-      return JSON.parse(value) as Project[];
+function messageFromPayload(payload: unknown): string {
+  if (typeof payload === "string") return payload;
+  if (Array.isArray(payload)) {
+    return payload.length ? messageFromPayload(payload[0]) : "Request failed.";
+  }
+  if (payload && typeof payload === "object") {
+    const values = Object.values(payload as Record<string, unknown>);
+    for (const value of values) {
+      const message = messageFromPayload(value);
+      if (message && message !== "Request failed.") return message;
     }
-  } catch {
-    // fallback
-  }
-  return INITIAL_DEMO_PROJECTS;
-}
-
-function getErrorMessage(body: unknown): string {
-  if (typeof body === "string") return body;
-  if (body && typeof body === "object") {
-    const values = Object.values(body as ApiErrorBody);
-    const message = values.find((value) => typeof value === "string");
-    if (typeof message === "string") return message;
-    if (Array.isArray(values[0]))
-      return String(values[0][0] ?? "Request failed.");
   }
   return "Request failed. Please try again.";
 }
 
-async function authorizedResponse(
+async function readResponse<T>(response: Response): Promise<T> {
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new ApiError(messageFromPayload(payload), response.status);
+  }
+  if (response.status === 204) return undefined as T;
+  return payload as T;
+}
+
+async function publicRequest<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return readResponse<T>(response);
+}
+
+async function authorizedRequest<T>(
   path: string,
-  tokens: TokenPair,
-  onTokensChanged: (tokens: TokenPair) => void,
+  tokens: AuthTokens,
+  onTokensChanged: (nextTokens: AuthTokens) => void,
   init: RequestInit = {},
-): Promise<Response> {
+): Promise<T> {
   const send = (access: string) => {
     const headers = new Headers(init.headers);
     headers.set("Authorization", `Bearer ${access}`);
@@ -117,1093 +100,666 @@ async function authorizedResponse(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh: tokens.refresh }),
     });
-    if (!refreshResponse.ok) {
-      throw new ApiError("Your session expired. Please sign in again.", 401);
-    }
-    const refreshed = (await refreshResponse.json()) as { access: string };
+    const refreshed = await readResponse<{ access: string }>(refreshResponse);
     const nextTokens = { ...tokens, access: refreshed.access };
     sessionStorage.setItem(SESSION_KEY, JSON.stringify(nextTokens));
     onTokensChanged(nextTokens);
     response = await send(nextTokens.access);
   }
-
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as unknown;
-    throw new ApiError(getErrorMessage(body), response.status);
-  }
-  return response;
+  return readResponse<T>(response);
 }
 
-async function requestJson<T>(
-  path: string,
-  tokens: TokenPair,
-  onTokensChanged: (tokens: TokenPair) => void,
-  init?: RequestInit,
-): Promise<T> {
-  const response = await authorizedResponse(
-    path,
-    tokens,
-    onTokensChanged,
-    init,
-  );
-  if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
+function formatDate(value: string): string {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(value));
 }
+
+function getInitials(name: string): string {
+  const parts = name.trim().split(/[\s._-]+/).filter(Boolean);
+  return (parts.length > 1 ? `${parts[0][0]}${parts[1][0]}` : name.slice(0, 2))
+    .toUpperCase();
+}
+
+const STATUS_LABELS: Record<ProjectStatus, string> = {
+  backlog: "Not started",
+  in_progress: "In progress",
+  completed: "Completed",
+};
 
 export default function App() {
-  const [tokens, setTokens] = useState<TokenPair | null>(readSavedTokens);
-  const [isDemoMode, setIsDemoMode] = useState<boolean>(() => {
-    return (
-      Boolean(localStorage.getItem(DEMO_MODE_KEY) === "true") ||
-      !readSavedTokens()
-    );
-  });
-  const [config, setConfig] = useState<WorkspaceConfig>(readSavedConfig);
-  const [viewMode, setViewMode] = useState<ViewMode>("overview");
-  const [searchQuery, setSearchQuery] = useState("");
-
-  const [projects, setProjects] = useState<Project[]>(() => {
-    return isDemoMode ? readDemoProjects() : [];
-  });
-  const [dashboard, setDashboard] = useState<DashboardData | null>(() => {
-    return isDemoMode ? INITIAL_DEMO_DASHBOARD : null;
-  });
-
-  const [isLoading, setIsLoading] = useState(
-    () => Boolean(readSavedTokens()) && !isDemoMode,
-  );
-  const [isAuthBusy, setIsAuthBusy] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [userName, setUserName] = useState(
-    () => sessionStorage.getItem(USER_KEY) ?? "Guest User",
-  );
-  const [message, setMessage] = useState("");
+  const [route, setRoute] = useState<Route>(routeFromPath);
+  const [tokens, setTokens] = useState<AuthTokens | null>(readTokens);
+  const [profile, setProfile] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(() => Boolean(readTokens()));
+  const [loadedWorkspace, setLoadedWorkspace] = useState<{
+    userId: number;
+    access: string;
+    reloadKey: number;
+  } | null>(null);
+  const [authBusy, setAuthBusy] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
+  const [summary, setSummary] = useState<DashboardSummary>({
+    total: 0,
+    backlog: 0,
+    in_progress: 0,
+    completed: 0,
+  });
+  const [search, setSearch] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
+  const [isProjectDialogOpen, setProjectDialogOpen] = useState(false);
+  const [editingProject, setEditingProject] = useState<Project | null>(null);
+  const [projectDraft, setProjectDraft] = useState<ProjectDraft>({
+    title: "",
+    description: "",
+    status: "backlog",
+  });
+  const [projectBusy, setProjectBusy] = useState(false);
+  const [roleBusyId, setRoleBusyId] = useState<number | null>(null);
+  const workspaceLoading = Boolean(
+    profile &&
+      tokens &&
+      (loadedWorkspace?.userId !== profile.id ||
+        loadedWorkspace.access !== tokens.access ||
+        loadedWorkspace.reloadKey !== reloadKey),
+  );
 
-  // Modals state
-  const [isItemModalOpen, setIsItemModalOpen] = useState(false);
-  const [projectToEdit, setProjectToEdit] = useState<Project | null>(null);
-  const [itemDefaultStatus, setItemDefaultStatus] =
-    useState<ProjectStatus>("backlog");
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  function navigate(next: Route, replace = false) {
+    const path = next === "dashboard" ? "/dashboard" : `/${next}`;
+    if (replace) window.history.replaceState({}, "", path);
+    else window.history.pushState({}, "", path);
+    setRoute(next);
+    setError("");
+  }
 
-  // Sync config to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
-    } catch {
-      // ignore
-    }
-  }, [config]);
-
-  // Sync demo projects to localStorage
-  useEffect(() => {
-    if (isDemoMode) {
-      try {
-        localStorage.setItem(DEMO_PROJECTS_KEY, JSON.stringify(projects));
-      } catch {
-        // ignore
-      }
-    }
-  }, [projects, isDemoMode]);
-
-  function persistTokens(nextTokens: TokenPair | null) {
+  function persistTokens(nextTokens: AuthTokens | null) {
     if (nextTokens) {
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(nextTokens));
-      localStorage.setItem(DEMO_MODE_KEY, "false");
-      setIsDemoMode(false);
+      setAuthLoading(true);
     } else {
       sessionStorage.removeItem(SESSION_KEY);
+      setAuthLoading(false);
+      setProfile(null);
     }
-    setIsLoading(Boolean(nextTokens));
     setTokens(nextTokens);
   }
 
-  function signOut() {
-    persistTokens(null);
-    sessionStorage.removeItem(USER_KEY);
-    setUserName("Guest User");
-    setProjects([]);
-    setDashboard(null);
-    setError("");
-    setMessage("");
-    setIsDemoMode(false);
-    localStorage.removeItem(DEMO_MODE_KEY);
-  }
-
-  function enterDemoMode() {
-    setIsDemoMode(true);
-    localStorage.setItem(DEMO_MODE_KEY, "true");
-    setUserName("Demo Explorer");
-    const demoItems = readDemoProjects();
-    setProjects(demoItems);
-    setDashboard({
-      total: demoItems.length,
-      backlog: demoItems.filter((p) => p.status === "backlog").length,
-      in_progress: demoItems.filter((p) => p.status === "in_progress").length,
-      completed: demoItems.filter((p) => p.status === "completed").length,
-      snapshots: INITIAL_DEMO_DASHBOARD.snapshots,
-    });
-    setError("");
-    setMessage(
-      "Welcome to Demo Mode. You can fully test, customize, and build.",
-    );
-  }
-
-  function toggleDemoMode() {
-    if (isDemoMode) {
-      if (tokens) {
-        setIsDemoMode(false);
-        localStorage.setItem(DEMO_MODE_KEY, "false");
-        setMessage("Switched to Live API mode.");
-      } else {
-        signOut();
-      }
-    } else {
-      enterDemoMode();
-    }
-  }
-
-  // Load from API when signed in
   useEffect(() => {
-    if (!tokens || isDemoMode) {
-      return;
+    const handlePopState = () => {
+      setRoute(routeFromPath());
+      setError("");
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    if (!tokens) {
+      return () => {
+        active = false;
+      };
     }
 
-    let isMounted = true;
-
-    Promise.all([
-      requestJson<Project[]>("/projects/", tokens, persistTokens),
-      requestJson<DashboardData>("/dashboard/", tokens, persistTokens),
-    ])
-      .then(([nextProjects, nextDashboard]) => {
-        if (!isMounted) return;
-        const parsedProjects = nextProjects.map((p) => {
-          const { cleanDescription, priority, tags } = parseProjectMetadata(
-            p.description,
-          );
-          return {
-            ...p,
-            description: cleanDescription,
-            priority: priority || "medium",
-            tags: tags || [],
-          };
-        });
-        setProjects(parsedProjects);
-        setDashboard(nextDashboard);
-        setError("");
+    authorizedRequest<User>("/auth/me/", tokens, persistTokens)
+      .then((user) => {
+        if (!active) return;
+        setProfile(user);
+        if (window.location.pathname !== "/dashboard") {
+          window.history.replaceState({}, "", "/dashboard");
+          setRoute("dashboard");
+        }
       })
       .catch((requestError: unknown) => {
-        if (!isMounted) return;
+        if (!active) return;
+        persistTokens(null);
+        setError(
+          requestError instanceof Error
+            ? requestError.message
+            : "Your session ended. Sign in again to continue.",
+        );
+        window.history.replaceState({}, "", "/login");
+        setRoute("login");
+      })
+      .finally(() => {
+        if (active) setAuthLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [tokens]);
+
+  useEffect(() => {
+    if (!profile || !tokens) return;
+    const currentProfile = profile;
+    const currentTokens = tokens;
+    let active = true;
+
+    async function loadWorkspace() {
+      if (currentProfile.role === "admin") {
+        const [adminData, users] = await Promise.all([
+          authorizedRequest<AdminDashboard>(
+            "/admin/dashboard/",
+            currentTokens,
+            persistTokens,
+          ),
+          authorizedRequest<AdminUser[]>(
+            "/admin/users/",
+            currentTokens,
+            persistTokens,
+          ),
+        ]);
+        if (!active) return;
+        setSummary({
+          total: adminData.total_projects,
+          backlog: adminData.backlog,
+          in_progress: adminData.in_progress,
+          completed: adminData.completed,
+          total_users: adminData.total_users,
+          admin_users: adminData.admin_users,
+        });
+        setAdminUsers(users);
+        setProjects([]);
+      } else {
+        const [dashboardData, projectData] = await Promise.all([
+          authorizedRequest<UserDashboard>("/dashboard/", currentTokens, persistTokens),
+          authorizedRequest<Project[]>("/projects/", currentTokens, persistTokens),
+        ]);
+        if (!active) return;
+        setSummary(dashboardData);
+        setProjects(projectData);
+        setAdminUsers([]);
+      }
+    }
+
+    loadWorkspace()
+      .catch((requestError: unknown) => {
+        if (!active) return;
         if (requestError instanceof ApiError && requestError.status === 401) {
-          signOut();
+          persistTokens(null);
+          setProfile(null);
+          navigate("login", true);
         } else {
           setError(
             requestError instanceof Error
               ? requestError.message
-              : "Could not connect to the project API. You can switch to Demo Mode above.",
+              : "Could not load the dashboard.",
           );
         }
       })
       .finally(() => {
-        if (isMounted) setIsLoading(false);
+        if (active) {
+          setLoadedWorkspace({
+            userId: currentProfile.id,
+            access: currentTokens.access,
+            reloadKey,
+          });
+        }
       });
 
     return () => {
-      isMounted = false;
+      active = false;
     };
-  }, [tokens, isDemoMode]);
+  }, [profile, tokens, reloadKey]);
 
   async function handleSignIn(username: string, password: string) {
-    setIsAuthBusy(true);
+    setAuthBusy(true);
     setError("");
-    setMessage("");
     try {
-      const tokenResponse = await fetch(`${API_BASE}/auth/token/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+      const nextTokens = await publicRequest<AuthTokens>("/auth/token/", {
+        username,
+        password,
       });
-      const tokenBody = (await tokenResponse
-        .json()
-        .catch(() => null)) as unknown;
-      if (!tokenResponse.ok) {
-        throw new ApiError(getErrorMessage(tokenBody), tokenResponse.status);
-      }
-      sessionStorage.setItem(USER_KEY, username.trim());
-      setUserName(username.trim());
-      persistTokens(tokenBody as TokenPair);
-      setMessage("Welcome back.");
-    } catch (authError) {
+      persistTokens(nextTokens);
+      navigate("dashboard");
+    } catch (requestError) {
       setError(
-        authError instanceof Error
-          ? authError.message
-          : "Unable to sign in. Check credentials or try Instant Demo Mode below.",
+        requestError instanceof Error ? requestError.message : "Could not sign in.",
       );
     } finally {
-      setIsAuthBusy(false);
+      setAuthBusy(false);
     }
   }
 
-  async function handleRegister(
-    username: string,
-    email: string,
-    password: string,
-  ) {
-    setIsAuthBusy(true);
+  async function handleRegister(username: string, email: string, password: string) {
+    setAuthBusy(true);
     setError("");
-    setMessage("");
     try {
-      const registerResponse = await fetch(`${API_BASE}/auth/register/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, email, password }),
+      await publicRequest<User>("/auth/register/", { username, email, password });
+      const nextTokens = await publicRequest<AuthTokens>("/auth/token/", {
+        username,
+        password,
       });
-      const registerBody = (await registerResponse
-        .json()
-        .catch(() => null)) as unknown;
-      if (!registerResponse.ok) {
-        throw new ApiError(
-          getErrorMessage(registerBody),
-          registerResponse.status,
-        );
-      }
-
-      await handleSignIn(username, password);
-    } catch (authError) {
+      persistTokens(nextTokens);
+      navigate("dashboard");
+    } catch (requestError) {
       setError(
-        authError instanceof Error ? authError.message : "Registration failed.",
+        requestError instanceof Error
+          ? requestError.message
+          : "Could not create your account.",
       );
-      setIsAuthBusy(false);
-    }
-  }
-
-  async function handleCreateOrUpdateProject(data: {
-    title: string;
-    description: string;
-    status: ProjectStatus;
-    priority: Priority;
-    tags: string[];
-    id?: number;
-  }) {
-    setIsSaving(true);
-    setError("");
-    setMessage("");
-
-    try {
-      if (isDemoMode || !tokens) {
-        // Local mode handling
-        if (data.id) {
-          // Update
-          setProjects((curr) =>
-            curr.map((p) =>
-              p.id === data.id
-                ? {
-                    ...p,
-                    title: data.title,
-                    description: data.description,
-                    status: data.status,
-                    priority: data.priority,
-                    tags: data.tags,
-                    updated_at: new Date().toISOString(),
-                  }
-                : p,
-            ),
-          );
-          setMessage(`${config.entityLabel} updated.`);
-        } else {
-          // Create
-          const newProject: Project = {
-            id: Date.now(),
-            title: data.title,
-            description: data.description,
-            status: data.status,
-            priority: data.priority,
-            tags: data.tags,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          };
-          setProjects((curr) => [newProject, ...curr]);
-          setMessage(`${config.entityLabel} added to workspace.`);
-        }
-      } else {
-        // Backend API handling
-        const encodedDesc = encodeProjectDescription(
-          data.description,
-          data.priority,
-          data.tags,
-        );
-
-        if (data.id) {
-          // PATCH existing
-          const updated = await requestJson<Project>(
-            `/projects/${data.id}/`,
-            tokens,
-            persistTokens,
-            {
-              method: "PATCH",
-              body: JSON.stringify({
-                title: data.title,
-                description: encodedDesc,
-                status: data.status,
-              }),
-            },
-          );
-          setProjects((curr) =>
-            curr.map((p) =>
-              p.id === updated.id
-                ? {
-                    ...updated,
-                    description: data.description,
-                    priority: data.priority,
-                    tags: data.tags,
-                  }
-                : p,
-            ),
-          );
-          setMessage(`${config.entityLabel} updated.`);
-        } else {
-          // POST new
-          const created = await requestJson<Project>(
-            "/projects/",
-            tokens,
-            persistTokens,
-            {
-              method: "POST",
-              body: JSON.stringify({
-                title: data.title,
-                description: encodedDesc,
-                status: data.status,
-              }),
-            },
-          );
-          setProjects((curr) => [
-            {
-              ...created,
-              description: data.description,
-              priority: data.priority,
-              tags: data.tags,
-            },
-            ...curr,
-          ]);
-          setMessage(`${config.entityLabel} created.`);
-        }
-
-        // Refresh dashboard from API
-        const nextDashboard = await requestJson<DashboardData>(
-          "/dashboard/",
-          tokens,
-          persistTokens,
-        );
-        setDashboard(nextDashboard);
-      }
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : `Failed to save ${config.entityLabel}.`,
-      );
-      throw err;
     } finally {
-      setIsSaving(false);
+      setAuthBusy(false);
     }
   }
 
-  async function handleStatusChange(
-    project: Project,
-    newStatus: ProjectStatus,
-  ) {
-    if (project.status === newStatus) return;
+  function signOut() {
+    persistTokens(null);
+    setProfile(null);
+    setProjects([]);
+    setAdminUsers([]);
+    setSummary({ total: 0, backlog: 0, in_progress: 0, completed: 0 });
+    setNotice("");
+    navigate("login");
+  }
 
-    // Optimistic UI update
-    setProjects((curr) =>
-      curr.map((p) =>
-        p.id === project.id
-          ? { ...p, status: newStatus, updated_at: new Date().toISOString() }
-          : p,
-      ),
+  function openProjectForm(project?: Project) {
+    setEditingProject(project ?? null);
+    setProjectDraft(
+      project
+        ? {
+            title: project.title,
+            description: project.description,
+            status: project.status,
+          }
+        : { title: "", description: "", status: "backlog" },
     );
+    setProjectDialogOpen(true);
+  }
 
-    if (isDemoMode || !tokens) {
-      setMessage(`Status updated to ${newStatus.replace("_", " ")}.`);
-      return;
-    }
-
+  async function saveProject(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!tokens || !profile) return;
+    setProjectBusy(true);
+    setError("");
     try {
-      await requestJson<Project>(
-        `/projects/${project.id}/`,
+      const saved = await authorizedRequest<Project>(
+        editingProject ? `/projects/${editingProject.id}/` : "/projects/",
         tokens,
         persistTokens,
         {
-          method: "PATCH",
-          body: JSON.stringify({ status: newStatus }),
+          method: editingProject ? "PATCH" : "POST",
+          body: JSON.stringify(projectDraft),
         },
       );
-      const nextDashboard = await requestJson<DashboardData>(
-        "/dashboard/",
-        tokens,
-        persistTokens,
+      setProjects((current) =>
+        editingProject
+          ? current.map((project) => (project.id === saved.id ? saved : project))
+          : [saved, ...current],
       );
-      setDashboard(nextDashboard);
-      setMessage(`Status updated.`);
-      setError("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update status.");
+      setProjectDialogOpen(false);
+      setNotice(editingProject ? "Project updated." : "Project created.");
+      setReloadKey((value) => value + 1);
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error ? requestError.message : "Could not save the project.",
+      );
+    } finally {
+      setProjectBusy(false);
     }
   }
 
-  async function handleDeleteProject(project: Project) {
-    if (
-      !window.confirm(
-        `Delete “${project.title}” from your ${config.entityLabel.toLowerCase()}s?`,
-      )
-    ) {
-      return;
-    }
-
-    setProjects((curr) => curr.filter((p) => p.id !== project.id));
-    setMessage(`${config.entityLabel} deleted.`);
-
-    if (isDemoMode || !tokens) return;
-
+  async function changeProjectStatus(project: Project, status: ProjectStatus) {
+    if (!tokens || project.status === status) return;
+    setError("");
     try {
-      await requestJson<void>(
+      const updated = await authorizedRequest<Project>(
+        `/projects/${project.id}/`,
+        tokens,
+        persistTokens,
+        { method: "PATCH", body: JSON.stringify({ status }) },
+      );
+      setProjects((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      setNotice("Project status updated.");
+      setReloadKey((value) => value + 1);
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error ? requestError.message : "Could not update the project.",
+      );
+    }
+  }
+
+  async function deleteProject(project: Project) {
+    if (!tokens || !window.confirm(`Delete “${project.title}”?`)) return;
+    setError("");
+    try {
+      await authorizedRequest<void>(
         `/projects/${project.id}/`,
         tokens,
         persistTokens,
         { method: "DELETE" },
       );
-      const nextDashboard = await requestJson<DashboardData>(
-        "/dashboard/",
-        tokens,
-        persistTokens,
-      );
-      setDashboard(nextDashboard);
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Could not delete project.",
-      );
-    }
-  }
-
-  async function handleSnapshot() {
-    setMessage("");
-    setError("");
-
-    if (isDemoMode || !tokens) {
-      const today = new Date().toISOString().slice(0, 10);
-      const newSnapshot = {
-        day: today,
-        backlog_count: projects.filter((p) => p.status === "backlog").length,
-        in_progress_count: projects.filter((p) => p.status === "in_progress")
-          .length,
-        completed_count: projects.filter((p) => p.status === "completed")
-          .length,
-        total_count: projects.length,
-      };
-      setDashboard((curr) => ({
-        total: projects.length,
-        backlog: newSnapshot.backlog_count,
-        in_progress: newSnapshot.in_progress_count,
-        completed: newSnapshot.completed_count,
-        snapshots: [
-          ...(curr?.snapshots?.filter((s) => s.day !== today) ?? []),
-          newSnapshot,
-        ],
-      }));
-      setMessage("Snapshot recorded. Your status history has been updated.");
-      return;
-    }
-
-    try {
-      await requestJson<{ task_id: string; status: string }>(
-        "/dashboard/",
-        tokens,
-        persistTokens,
-        { method: "POST" },
-      );
-      setMessage(
-        "Celery snapshot queued. The worker will record today’s metrics.",
-      );
+      setProjects((current) => current.filter((item) => item.id !== project.id));
+      setNotice("Project deleted.");
+      setReloadKey((value) => value + 1);
     } catch (requestError) {
       setError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Could not queue snapshot.",
+        requestError instanceof Error ? requestError.message : "Could not delete the project.",
       );
     }
   }
 
-  async function handlePdfDownload() {
+  async function changeUserRole(user: AdminUser, role: Role) {
+    if (!tokens || user.role === role) return;
+    setRoleBusyId(user.id);
     setError("");
-    if (!tokens || isDemoMode) {
-      window.print();
-      setMessage("Print / PDF dialogue opened.");
-      return;
-    }
-
     try {
-      const response = await authorizedResponse(
-        "/reports/projects.pdf",
+      await authorizedRequest<User>(
+        `/admin/users/${user.id}/role/`,
         tokens,
         persistTokens,
+        { method: "PATCH", body: JSON.stringify({ role }) },
       );
-      const objectUrl = URL.createObjectURL(await response.blob());
-      const link = document.createElement("a");
-      link.href = objectUrl;
-      link.download = `${config.entityLabel.toLowerCase()}-report.pdf`;
-      link.click();
-      URL.revokeObjectURL(objectUrl);
-      setMessage("Your PDF report is downloaded.");
+      setAdminUsers((current) =>
+        current.map((item) => (item.id === user.id ? { ...item, role } : item)),
+      );
+      setNotice(`${user.username} is now ${role === "admin" ? "an admin" : "a user"}.`);
+      setReloadKey((value) => value + 1);
     } catch (requestError) {
       setError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Could not create PDF report from backend. Opening print dialogue.",
+        requestError instanceof Error ? requestError.message : "Could not update the account role.",
       );
-      window.print();
+    } finally {
+      setRoleBusyId(null);
     }
   }
 
-  function handleApplyPreset(preset: DomainPreset) {
-    setConfig((curr) => ({
-      ...curr,
-      appName: preset.appName,
-      entityLabel: preset.entityLabel,
-      tagline: preset.tagline,
-      theme: preset.theme,
-    }));
-
-    if (isDemoMode) {
-      const newItems: Project[] = preset.projects.map((p, index) => ({
-        id: Date.now() + index,
-        title: p.title,
-        description: p.description,
-        status: p.status,
-        priority: p.priority,
-        tags: p.tags,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }));
-      setProjects(newItems);
-      setMessage(`Applied domain preset: “${preset.name}”`);
-    } else {
-      setMessage(`Switched workspace configuration to “${preset.name}”`);
-    }
-  }
-
-  function handleResetSampleData() {
-    const fresh = INITIAL_DEMO_PROJECTS.map((p, i) => ({
-      ...p,
-      id: Date.now() + i,
-      updated_at: new Date().toISOString(),
-    }));
-    setProjects(fresh);
-    setMessage("Starter projects restored.");
-  }
-
-  // Filtered projects for search
-  const searchedProjects = useMemo(() => {
-    if (!searchQuery.trim()) return projects;
-    const q = searchQuery.toLowerCase();
-    return projects.filter(
-      (p) =>
-        p.title.toLowerCase().includes(q) ||
-        p.description.toLowerCase().includes(q) ||
-        p.tags?.some((t) => t.toLowerCase().includes(q)) ||
-        p.status.toLowerCase().includes(q) ||
-        (p.priority && p.priority.toLowerCase().includes(q)),
+  const visibleProjects = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return projects;
+    return projects.filter((project) =>
+      `${project.title} ${project.description} ${STATUS_LABELS[project.status]}`
+        .toLowerCase()
+        .includes(query),
     );
-  }, [projects, searchQuery]);
+  }, [projects, search]);
 
-  // Chart data
-  const chartData = useMemo(() => {
-    const backlogCount = projects.filter((p) => p.status === "backlog").length;
-    const progressCount = projects.filter(
-      (p) => p.status === "in_progress",
-    ).length;
-    const completedCount = projects.filter(
-      (p) => p.status === "completed",
-    ).length;
+  const visibleUsers = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return adminUsers;
+    return adminUsers.filter((user) =>
+      `${user.username} ${user.email} ${user.role}`.toLowerCase().includes(query),
+    );
+  }, [adminUsers, search]);
 
-    return [
-      { name: "Backlog", count: backlogCount, fill: "#94a3b8" },
-      { name: "In progress", count: progressCount, fill: "#38bdf8" },
-      { name: "Completed", count: completedCount, fill: "#10b981" },
-    ];
-  }, [projects]);
+  if (authLoading) {
+    return (
+      <main className="loading-screen">
+        <span className="loading-mark">W</span>
+        <p>Opening your workspace…</p>
+      </main>
+    );
+  }
 
-  // If not authenticated and not in demo mode, show Auth
-  if (!tokens && !isDemoMode) {
+  if (!profile || !tokens) {
     return (
       <AuthView
+        mode={route === "register" ? "register" : "login"}
+        isBusy={authBusy}
+        error={error}
+        onNavigate={(mode) => navigate(mode)}
         onSignIn={handleSignIn}
         onRegister={handleRegister}
-        onEnterDemoMode={enterDemoMode}
-        isBusy={isAuthBusy}
-        error={error}
-        message={message}
-        config={config}
       />
     );
   }
 
+  const isAdmin = profile.role === "admin";
+  const metricItems = isAdmin
+    ? [
+        { label: "Total accounts", value: summary.total_users ?? 0, icon: "◎", tone: "violet" },
+        { label: "Administrators", value: summary.admin_users ?? 0, icon: "◇", tone: "blue" },
+        { label: "All projects", value: summary.total, icon: "▤", tone: "green" },
+        { label: "In progress", value: summary.in_progress, icon: "◷", tone: "orange" },
+      ]
+    : [
+        { label: "Total projects", value: summary.total, icon: "▤", tone: "violet" },
+        { label: "Not started", value: summary.backlog, icon: "◷", tone: "blue" },
+        { label: "In progress", value: summary.in_progress, icon: "↗", tone: "orange" },
+        { label: "Completed", value: summary.completed, icon: "✓", tone: "green" },
+      ];
+
   return (
-    <div
-      className={`app-root theme-${config.theme} ${config.darkMode ? "dark-theme" : ""}`}
-    >
-      <Sidebar
-        viewMode={viewMode}
-        onSelectView={setViewMode}
-        config={config}
-        onOpenSettings={() => setIsSettingsOpen(true)}
-        itemCount={projects.length}
-        userName={userName}
-        isDemoMode={isDemoMode}
-        onSignOut={signOut}
-        isOpenOnMobile={isMobileSidebarOpen}
-        onCloseMobile={() => setIsMobileSidebarOpen(false)}
-        onToggleDarkMode={() =>
-          setConfig((c) => ({ ...c, darkMode: !c.darkMode }))
-        }
-      />
+    <div className="dashboard-shell">
+      <aside className="app-sidebar">
+        <a className="brand brand-dark sidebar-brand" href="/dashboard">
+          <span className="brand-symbol">W</span>
+          <span>Project Hub</span>
+        </a>
+        <div className="sidebar-label">WORKSPACE</div>
+        <nav className="sidebar-nav" aria-label="Workspace navigation">
+          <button className="sidebar-link active" type="button">
+            <span className="sidebar-link-icon">⌂</span> Dashboard
+          </button>
+          <button
+            className="sidebar-link"
+            type="button"
+            onClick={() => document.getElementById(isAdmin ? "users-panel" : "projects-panel")?.scrollIntoView({ behavior: "smooth" })}
+          >
+            <span className="sidebar-link-icon">{isAdmin ? "♙" : "▦"}</span>
+            {isAdmin ? "User management" : "My projects"}
+          </button>
+        </nav>
 
-      <div className="main-panel">
-        <TopNavbar
-          viewMode={viewMode}
-          config={config}
-          searchQuery={searchQuery}
-          onSearchChange={setSearchQuery}
-          isDemoMode={isDemoMode}
-          onToggleDemoMode={toggleDemoMode}
-          onOpenNewModal={() => {
-            setProjectToEdit(null);
-            setItemDefaultStatus("backlog");
-            setIsItemModalOpen(true);
-          }}
-          onOpenSettings={() => setIsSettingsOpen(true)}
-          onExportCSV={() => exportProjectsToCSV(projects, config.entityLabel)}
-          onExportJSON={() =>
-            exportProjectsToJSON(projects, config.entityLabel)
-          }
-          onToggleMobileMenu={() => setIsMobileSidebarOpen((prev) => !prev)}
-          userName={userName}
-        />
-
-        <main className="page-content">
-          {error && (
-            <div className="notice notice-error" role="alert">
-              <span className="notice-icon">⚠</span>
-              <span>{error}</span>
-              {isDemoMode ? null : (
-                <button
-                  className="notice-link-btn"
-                  onClick={enterDemoMode}
-                  type="button"
-                >
-                  Switch to Demo Mode
-                </button>
-              )}
-            </div>
-          )}
-
-          {message && (
-            <div className="notice notice-success" role="status">
-              <span className="notice-icon">✓</span>
-              <span>{message}</span>
-            </div>
-          )}
-
-          {/* VIEW 1: OVERVIEW */}
-          {viewMode === "overview" && (
-            <>
-              <section className="welcome-row">
-                <div>
-                  <span className="eyebrow">
-                    FLEXIBLE ADAPTIVE WORKSPACE · READY FOR ANY CHALLENGE
-                  </span>
-                  <h1>
-                    {config.appName} <span className="accent-mark">✳</span>
-                  </h1>
-                  <p>
-                    {config.tagline ||
-                      "Organize, track momentum, and deliver results."}
-                  </p>
-                </div>
-                <div className="welcome-actions">
-                  <button
-                    className="button button-outline"
-                    onClick={handlePdfDownload}
-                    type="button"
-                  >
-                    <span>↓</span> Export Report
-                  </button>
-                  <button
-                    className="button button-primary"
-                    onClick={() => {
-                      setProjectToEdit(null);
-                      setItemDefaultStatus("backlog");
-                      setIsItemModalOpen(true);
-                    }}
-                    type="button"
-                  >
-                    <span>＋</span> Add {config.entityLabel}
-                  </button>
-                </div>
-              </section>
-
-              <MetricCards
-                dashboard={dashboard}
-                projects={projects}
-                isLoading={isLoading}
-                config={config}
-              />
-
-              <section className="overview-grid">
-                <article className="panel chart-panel">
-                  <div className="panel-heading">
-                    <div>
-                      <span className="eyebrow">DISTRIBUTION & HEALTH</span>
-                      <h2>{config.entityLabel} Pipeline Status</h2>
-                    </div>
-                    <span className="period-chip">
-                      Live Telemetry <i>⌄</i>
-                    </span>
-                  </div>
-
-                  <div className="chart-legend">
-                    <span>
-                      <i className="legend-backlog" /> Backlog
-                    </span>
-                    <span>
-                      <i className="legend-progress" /> In progress
-                    </span>
-                    <span>
-                      <i className="legend-complete" /> Completed
-                    </span>
-                  </div>
-
-                  <div className="chart-wrap">
-                    <Suspense
-                      fallback={
-                        <div className="chart-loading">Loading chart…</div>
-                      }
-                    >
-                      <ProjectChart data={chartData} />
-                    </Suspense>
-                  </div>
-
-                  <div className="chart-caption">
-                    <span>
-                      <b>{projects.length}</b> total{" "}
-                      {config.entityLabel.toLowerCase()}s recorded
-                    </span>
-                    <span>Real-time status updates sync across views</span>
-                  </div>
-                </article>
-
-                <article className="panel quick-panel">
-                  <div className="panel-heading">
-                    <div>
-                      <span className="eyebrow">AUTOMATION & SNAPSHOTS</span>
-                      <h2>Daily Metric Log</h2>
-                    </div>
-                    <span className="automation-mark">✳</span>
-                  </div>
-                  <p className="quick-copy">
-                    Capture daily project metrics and snapshot history.
-                    Supported by Celery Beat schedules in production and local
-                    telemetry in demo mode.
-                  </p>
-                  <div className="snapshot-status">
-                    <span className="snapshot-icon">◷</span>
-                    <span>
-                      <strong>{dashboard?.snapshots?.length ?? 1}</strong>{" "}
-                      snapshots recorded
-                    </span>
-                  </div>
-                  <button
-                    className="button button-primary button-wide"
-                    onClick={handleSnapshot}
-                    type="button"
-                  >
-                    Record Snapshot Now <span>→</span>
-                  </button>
-                  <div className="quick-foot">
-                    <i /> Celery + Redis + Postgres pipeline
-                  </div>
-                </article>
-              </section>
-
-              <div className="section-title-row overview-table-header">
-                <div>
-                  <span className="eyebrow">DIRECT WORKSPACE ACCESS</span>
-                  <h2>
-                    Active {config.entityLabel}s{" "}
-                    <span className="count-pill">
-                      {searchedProjects.length}
-                    </span>
-                  </h2>
-                </div>
-                <div className="view-switch-links">
-                  <button
-                    className="button button-outline button-sm"
-                    onClick={() => setViewMode("board")}
-                    type="button"
-                  >
-                    Switch to Kanban Board →
-                  </button>
-                </div>
-              </div>
-
-              <ProjectTable
-                projects={searchedProjects}
-                config={config}
-                onStatusChange={handleStatusChange}
-                onEditProject={(p) => {
-                  setProjectToEdit(p);
-                  setIsItemModalOpen(true);
-                }}
-                onDeleteProject={handleDeleteProject}
-                onOpenCreateModal={() => {
-                  setProjectToEdit(null);
-                  setItemDefaultStatus("backlog");
-                  setIsItemModalOpen(true);
-                }}
-                onResetSampleData={handleResetSampleData}
-              />
-            </>
-          )}
-
-          {/* VIEW 2: KANBAN BOARD */}
-          {viewMode === "board" && (
-            <div className="board-view-container">
-              <div className="section-title-row">
-                <div>
-                  <span className="eyebrow">VISUAL PIPELINE</span>
-                  <h2>
-                    {config.entityLabel} Board (Kanban){" "}
-                    <span className="count-pill">
-                      {searchedProjects.length}
-                    </span>
-                  </h2>
-                </div>
-                <div className="board-header-actions">
-                  <span className="board-drag-hint">
-                    Tip: Drag cards between columns to change status
-                  </span>
-                  <button
-                    className="button button-primary button-sm"
-                    onClick={() => {
-                      setProjectToEdit(null);
-                      setItemDefaultStatus("backlog");
-                      setIsItemModalOpen(true);
-                    }}
-                    type="button"
-                  >
-                    ＋ New {config.entityLabel}
-                  </button>
-                </div>
-              </div>
-
-              <KanbanBoard
-                projects={searchedProjects}
-                config={config}
-                onStatusChange={handleStatusChange}
-                onEditProject={(p) => {
-                  setProjectToEdit(p);
-                  setIsItemModalOpen(true);
-                }}
-                onDeleteProject={handleDeleteProject}
-                onAddNewToStatus={(status) => {
-                  setProjectToEdit(null);
-                  setItemDefaultStatus(status);
-                  setIsItemModalOpen(true);
-                }}
-              />
-            </div>
-          )}
-
-          {/* VIEW 3: TABLE DIRECTORY */}
-          {viewMode === "table" && (
-            <div className="table-view-container">
-              <div className="section-title-row">
-                <div>
-                  <span className="eyebrow">DATA MATRIX</span>
-                  <h2>
-                    {config.entityLabel} Directory{" "}
-                    <span className="count-pill">
-                      {searchedProjects.length}
-                    </span>
-                  </h2>
-                </div>
-                <button
-                  className="button button-primary button-sm"
-                  onClick={() => {
-                    setProjectToEdit(null);
-                    setItemDefaultStatus("backlog");
-                    setIsItemModalOpen(true);
-                  }}
-                  type="button"
-                >
-                  ＋ Add {config.entityLabel}
-                </button>
-              </div>
-
-              <ProjectTable
-                projects={searchedProjects}
-                config={config}
-                onStatusChange={handleStatusChange}
-                onEditProject={(p) => {
-                  setProjectToEdit(p);
-                  setIsItemModalOpen(true);
-                }}
-                onDeleteProject={handleDeleteProject}
-                onOpenCreateModal={() => {
-                  setProjectToEdit(null);
-                  setItemDefaultStatus("backlog");
-                  setIsItemModalOpen(true);
-                }}
-                onResetSampleData={handleResetSampleData}
-              />
-            </div>
-          )}
-
-          {/* VIEW 4: REPORTS & ANALYTICS */}
-          {viewMode === "reports" && (
-            <div className="reports-view-container">
-              <div className="section-title-row">
-                <div>
-                  <span className="eyebrow">EXPORT & INSIGHTS</span>
-                  <h2>Audit & Telemetry Reports</h2>
-                </div>
-                <div className="reports-top-buttons">
-                  <button
-                    className="button button-primary"
-                    onClick={handlePdfDownload}
-                    type="button"
-                  >
-                    <span>↓</span> Generate Official PDF Report
-                  </button>
-                  <button
-                    className="button button-outline"
-                    onClick={() =>
-                      exportProjectsToCSV(projects, config.entityLabel)
-                    }
-                    type="button"
-                  >
-                    Download CSV
-                  </button>
-                </div>
-              </div>
-
-              <MetricCards
-                dashboard={dashboard}
-                projects={projects}
-                isLoading={isLoading}
-                config={config}
-              />
-
-              <div className="overview-grid">
-                <article className="panel">
-                  <div className="panel-heading">
-                    <div>
-                      <span className="eyebrow">MOMENTUM</span>
-                      <h2>Historical Trajectory</h2>
-                    </div>
-                  </div>
-                  <div className="chart-wrap">
-                    <Suspense fallback={<div>Loading chart…</div>}>
-                      <ProjectChart data={chartData} />
-                    </Suspense>
-                  </div>
-                </article>
-
-                <article className="panel">
-                  <div className="panel-heading">
-                    <div>
-                      <span className="eyebrow">TELEMETRY</span>
-                      <h2>System Health & Architecture</h2>
-                    </div>
-                  </div>
-                  <div className="system-health-list">
-                    <div className="health-item">
-                      <span>Frontend Framework</span>
-                      <strong>React 19 + TypeScript + Vite</strong>
-                    </div>
-                    <div className="health-item">
-                      <span>Backend REST API</span>
-                      <strong>Django REST Framework 3.15</strong>
-                    </div>
-                    <div className="health-item">
-                      <span>Worker & Scheduler</span>
-                      <strong>Celery 5.4 + Celery Beat</strong>
-                    </div>
-                    <div className="health-item">
-                      <span>Document Engine</span>
-                      <strong>WeasyPrint PDF Generator</strong>
-                    </div>
-                    <div className="health-item">
-                      <span>Runtime Mode</span>
-                      <strong className={isDemoMode ? "tag-demo" : "tag-live"}>
-                        {isDemoMode
-                          ? "Local Zero-Setup Demo"
-                          : "Full Stack Docker"}
-                      </strong>
-                    </div>
-                  </div>
-                </article>
-              </div>
-            </div>
-          )}
-
-          <footer className="page-footer">
-            <span>
-              {config.appName} · Clean & Flexible Architecture for Any Problem
-              Statement
+        <div className="sidebar-bottom">
+          <div className="sidebar-label">SIGNED IN AS</div>
+          <div className="signed-in-card">
+            <span className="user-avatar">{getInitials(profile.username)}</span>
+            <span className="signed-in-copy">
+              <strong>{profile.username}</strong>
+              <small>{isAdmin ? "Administrator" : "User"}</small>
             </span>
-            <div className="footer-links">
-              <button
-                className="footer-btn"
-                onClick={() => setIsSettingsOpen(true)}
-                type="button"
-              >
-                Domain Settings
-              </button>
-              <span>·</span>
-              <button
-                className="footer-btn"
-                onClick={() =>
-                  setConfig((c) => ({ ...c, darkMode: !c.darkMode }))
-                }
-                type="button"
-              >
-                {config.darkMode ? "Light Mode" : "Dark Mode"}
-              </button>
+          </div>
+          <button className="sidebar-signout" type="button" onClick={signOut}>
+            <span aria-hidden="true">↪</span> Sign out
+          </button>
+          <div className="sidebar-footer">PROJECT HUB <span>·</span> 1.0</div>
+        </div>
+      </aside>
+
+      <div className="dashboard-main">
+        <header className="dashboard-topbar">
+          <div className="breadcrumb"><span>Workspace</span><b>/</b><strong>Dashboard</strong></div>
+          <div className="topbar-account">
+            <span className={`role-pill ${isAdmin ? "role-admin" : "role-user"}`}>
+              {isAdmin ? "Admin" : "User"}
+            </span>
+            <span className="topbar-avatar">{getInitials(profile.username)}</span>
+            <span className="topbar-name">{profile.username}</span>
+          </div>
+        </header>
+
+        <main className="dashboard-content">
+          <section className="page-heading">
+            <div>
+              <p className="overline">{isAdmin ? "ADMINISTRATION" : "YOUR WORKSPACE"}</p>
+              <h1>{isAdmin ? "Admin overview" : `Good to see you, ${profile.username}`}</h1>
+              <p className="page-subtitle">
+                {isAdmin
+                  ? "Review workspace activity and manage account access."
+                  : "Here’s a clear view of your projects and what needs attention."}
+              </p>
             </div>
-          </footer>
+            {!isAdmin && (
+              <button className="button button-primary" type="button" onClick={() => openProjectForm()}>
+                <span aria-hidden="true">＋</span> New project
+              </button>
+            )}
+          </section>
+
+          {error && <div className="dashboard-alert" role="alert">{error}</div>}
+          {notice && <div className="dashboard-notice" role="status"><span>✓</span>{notice}<button type="button" aria-label="Dismiss message" onClick={() => setNotice("")}>×</button></div>}
+
+          <section className="metric-grid" aria-label="Workspace summary">
+            {metricItems.map((item) => (
+              <article className="metric-card" key={item.label}>
+                <div className={`metric-icon metric-${item.tone}`} aria-hidden="true">{item.icon}</div>
+                <div className="metric-copy"><span>{item.label}</span><strong>{workspaceLoading ? "—" : item.value}</strong></div>
+                <span className="metric-card-mark" aria-hidden="true">↗</span>
+              </article>
+            ))}
+          </section>
+
+          <section className="dashboard-grid">
+            <article className="panel status-panel">
+              <div className="panel-heading">
+                <div><h2>Project status</h2><p>{summary.total} projects across your workspace</p></div>
+                <span className="panel-icon" aria-hidden="true">◔</span>
+              </div>
+              <StatusOverview summary={summary} />
+            </article>
+
+            <article className="panel overview-note">
+              <div className="note-topline"><span className="note-sparkle">✳</span><span>{isAdmin ? "ACCESS CONTROL" : "A GOOD NEXT STEP"}</span></div>
+              <h2>{isAdmin ? "Keep access up to date" : "Keep momentum going"}</h2>
+              <p>
+                {isAdmin
+                  ? "Assign admin access only to people who need to manage accounts and workspace activity."
+                  : "Update project statuses as work moves forward. Your dashboard reflects the latest changes."}
+              </p>
+              <button
+                className="text-action"
+                type="button"
+                onClick={() => document.getElementById(isAdmin ? "users-panel" : "projects-panel")?.scrollIntoView({ behavior: "smooth" })}
+              >
+                {isAdmin ? "Manage accounts" : "View projects"} <span aria-hidden="true">→</span>
+              </button>
+            </article>
+          </section>
+
+          {isAdmin ? (
+            <section className="panel data-panel" id="users-panel">
+              <div className="panel-heading data-panel-heading">
+                <div><h2>User management</h2><p>Review accounts and manage workspace roles.</p></div>
+                <label className="search-control">
+                  <span aria-hidden="true">⌕</span>
+                  <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search accounts" aria-label="Search accounts" />
+                </label>
+              </div>
+              <div className="table-scroll">
+                <table>
+                  <thead><tr><th>Account</th><th>Projects</th><th>Joined</th><th>Role</th></tr></thead>
+                  <tbody>
+                    {workspaceLoading ? (
+                      <tr><td className="table-empty" colSpan={4}>Loading accounts…</td></tr>
+                    ) : visibleUsers.length ? visibleUsers.map((user) => (
+                      <tr key={user.id}>
+                        <td><div className="account-cell"><span className="user-avatar user-avatar-small">{getInitials(user.username)}</span><span><strong>{user.username}</strong><small>{user.email || "No email added"}</small></span></div></td>
+                        <td><span className="project-count">{user.project_count}</span></td>
+                        <td className="muted-cell">{formatDate(user.date_joined)}</td>
+                        <td>
+                          <select
+                            className={`role-select ${user.role === "admin" ? "role-select-admin" : ""}`}
+                            aria-label={`Role for ${user.username}`}
+                            value={user.role}
+                            disabled={user.role_locked || user.id === profile.id || roleBusyId === user.id}
+                            onChange={(event) => changeUserRole(user, event.target.value as Role)}
+                            title={user.role_locked ? "Managed through Django staff permissions" : undefined}
+                          >
+                            <option value="user">User</option>
+                            <option value="admin">Admin</option>
+                          </select>
+                        </td>
+                      </tr>
+                    )) : (
+                      <tr><td className="table-empty" colSpan={4}>No accounts match your search.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div className="panel-footnote">{adminUsers.length} account{adminUsers.length === 1 ? "" : "s"} in this workspace</div>
+            </section>
+          ) : (
+            <section className="panel data-panel" id="projects-panel">
+              <div className="panel-heading data-panel-heading">
+                <div><h2>Your projects</h2><p>Track work and keep each status current.</p></div>
+                <label className="search-control">
+                  <span aria-hidden="true">⌕</span>
+                  <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search projects" aria-label="Search projects" />
+                </label>
+              </div>
+              <div className="table-scroll">
+                <table>
+                  <thead><tr><th>Project</th><th>Status</th><th>Last updated</th><th><span className="visually-hidden">Actions</span></th></tr></thead>
+                  <tbody>
+                    {workspaceLoading ? (
+                      <tr><td className="table-empty" colSpan={4}>Loading projects…</td></tr>
+                    ) : visibleProjects.length ? visibleProjects.map((project) => (
+                      <tr key={project.id}>
+                        <td><div className="project-cell"><span className="project-bullet" /><span><strong>{project.title}</strong><small>{project.description || "No description"}</small></span></div></td>
+                        <td>
+                          <select
+                            className={`status-select status-${project.status}`}
+                            aria-label={`Status for ${project.title}`}
+                            value={project.status}
+                            onChange={(event) => changeProjectStatus(project, event.target.value as ProjectStatus)}
+                          >
+                            <option value="backlog">Not started</option>
+                            <option value="in_progress">In progress</option>
+                            <option value="completed">Completed</option>
+                          </select>
+                        </td>
+                        <td className="muted-cell">{formatDate(project.updated_at)}</td>
+                        <td><div className="row-actions"><button type="button" onClick={() => openProjectForm(project)} aria-label={`Edit ${project.title}`} title="Edit project">✎</button><button type="button" onClick={() => deleteProject(project)} aria-label={`Delete ${project.title}`} title="Delete project">×</button></div></td>
+                      </tr>
+                    )) : (
+                      <tr><td className="table-empty" colSpan={4}>{search ? "No projects match your search." : "No projects yet. Add one to get started."}</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div className="panel-footnote">Showing {visibleProjects.length} of {projects.length} project{projects.length === 1 ? "" : "s"}</div>
+            </section>
+          )}
         </main>
       </div>
 
-      {/* MODALS */}
-      <ItemModal
-        isOpen={isItemModalOpen}
-        onClose={() => setIsItemModalOpen(false)}
-        projectToEdit={projectToEdit}
-        defaultStatus={itemDefaultStatus}
-        config={config}
-        onSave={handleCreateOrUpdateProject}
-        isSaving={isSaving}
-      />
+      {isProjectDialogOpen && (
+        <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setProjectDialogOpen(false); }}>
+          <section className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="project-dialog-title">
+            <div className="dialog-heading"><div><p className="overline">PROJECT DETAILS</p><h2 id="project-dialog-title">{editingProject ? "Edit project" : "Create a project"}</h2></div><button type="button" className="dialog-close" onClick={() => setProjectDialogOpen(false)} aria-label="Close dialog">×</button></div>
+            <form className="project-form" onSubmit={saveProject}>
+              <label className="field-label" htmlFor="project-title">Project name<input id="project-title" autoFocus maxLength={120} value={projectDraft.title} onChange={(event) => setProjectDraft((draft) => ({ ...draft, title: event.target.value }))} placeholder="e.g. Website refresh" required /></label>
+              <label className="field-label" htmlFor="project-description">Description <span className="optional-label">Optional</span><textarea id="project-description" maxLength={1200} rows={4} value={projectDraft.description} onChange={(event) => setProjectDraft((draft) => ({ ...draft, description: event.target.value }))} placeholder="What does this project need to achieve?" /></label>
+              <label className="field-label" htmlFor="project-status">Status<select id="project-status" value={projectDraft.status} onChange={(event) => setProjectDraft((draft) => ({ ...draft, status: event.target.value as ProjectStatus }))}><option value="backlog">Not started</option><option value="in_progress">In progress</option><option value="completed">Completed</option></select></label>
+              {error && <div className="form-alert" role="alert">{error}</div>}
+              <div className="dialog-actions"><button className="button button-quiet" type="button" onClick={() => setProjectDialogOpen(false)}>Cancel</button><button className="button button-primary" type="submit" disabled={projectBusy}>{projectBusy ? "Saving…" : editingProject ? "Save changes" : "Create project"}</button></div>
+            </form>
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}
 
-      <WorkspaceSettingsModal
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        config={config}
-        onSaveConfig={setConfig}
-        onApplyPreset={handleApplyPreset}
-      />
+function StatusOverview({ summary }: { summary: DashboardSummary }) {
+  const rows: Array<{ key: ProjectStatus; label: string; value: number }> = [
+    { key: "backlog", label: "Not started", value: summary.backlog },
+    { key: "in_progress", label: "In progress", value: summary.in_progress },
+    { key: "completed", label: "Completed", value: summary.completed },
+  ];
+
+  return (
+    <div className="status-list">
+      {rows.map((row) => {
+        const width = summary.total ? `${Math.round((row.value / summary.total) * 100)}%` : "0%";
+        return (
+          <div className="status-row" key={row.key}>
+            <div className="status-row-label"><span className={`status-dot dot-${row.key}`} /><span>{row.label}</span><strong>{row.value}</strong></div>
+            <div className="status-track"><span className={`status-fill fill-${row.key}`} style={{ width }} /></div>
+          </div>
+        );
+      })}
+      {!summary.total && <p className="status-empty">Project activity will appear here.</p>}
     </div>
   );
 }

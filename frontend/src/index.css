@@ -1,25 +1,27 @@
 * {
   box-sizing: border-box;
 }
+
 html {
   min-width: 320px;
   min-height: 100%;
   scroll-behavior: smooth;
 }
+
 body {
   min-width: 320px;
   min-height: 100vh;
   margin: 0;
 }
+
 button,
+a,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
-button:focus-visible,
-a:focus-visible,
-input:focus-visible,
-select:focus-visible {
-  outline: 3px solid #a5c99c;
-  outline-offset: 2px;
+
+button {
+  -webkit-tap-highlight-color: transparent;
 }

@@ -1,22 +1,16 @@
-# WEB Project Hub
+# Project Hub
 
-A full-stack dashboard for tracking projects, monitoring progress, and exporting reports.
+A simple project dashboard with separate user and admin access, backed by a Django API and PostgreSQL database.
 
-## Features
+## What it includes
 
-- Project overview with status summaries and charts
-- Kanban board and searchable project table
-- User accounts with private project data
-- Scheduled project snapshots
-- PDF, CSV, and JSON exports
+- Login and registration pages with JWT authentication
+- Regular users manage their own projects and statuses
+- Admins see workspace totals and manage account roles
+- Project summaries, search, and create, edit, and delete actions
+- PostgreSQL storage with Redis and Celery services
 
-## Tech stack
-
-- **Frontend:** React, TypeScript, Vite, and Recharts
-- **Backend:** Django REST Framework and JWT authentication
-- **Services:** PostgreSQL, Redis, and Celery
-
-## Quick start
+## Run with Docker
 
 You need Docker Desktop with Docker Compose.
 
@@ -25,19 +19,27 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Open the dashboard at [http://localhost:5173](http://localhost:5173). The API health check is at [http://localhost:8001/api/health/](http://localhost:8001/api/health/), and Django admin is at [http://localhost:8001/admin/](http://localhost:8001/admin/).
+Open the dashboard at [http://localhost:5173](http://localhost:5173). The API health check is at [http://localhost:8001/api/health/](http://localhost:8001/api/health/).
 
-Docker Compose starts the frontend, API, PostgreSQL, Redis, a Celery worker, and Celery Beat.
+### Create the first admin
+
+With the Docker Compose stack running, open another terminal and create a Django superuser:
+
+```sh
+docker compose exec backend python manage.py createsuperuser
+```
+
+That account receives the admin role and can sign in to the dashboard. New registrations always receive the user role. Admins can promote and demote eligible accounts from **User management**. The system prevents changing your own role or removing the last admin.
 
 ## Local development
 
-Run PostgreSQL and Redis with Docker:
+Start PostgreSQL and Redis:
 
 ```sh
 docker compose up -d db redis
 ```
 
-In one terminal, install the backend dependencies and start Django:
+Start the backend in one terminal:
 
 ```sh
 cd backend
@@ -51,9 +53,9 @@ python manage.py migrate
 python manage.py runserver 0.0.0.0:8001
 ```
 
-WeasyPrint's system dependencies must also be installed for your operating system to generate PDF reports.
+Create an admin account with `python manage.py createsuperuser` from the backend directory.
 
-In another terminal, start the frontend:
+Start the frontend in another terminal:
 
 ```sh
 cd frontend
@@ -61,8 +63,26 @@ npm ci
 npm run dev
 ```
 
-Vite forwards `/api` requests to `http://localhost:8001`. Set `VITE_DEV_API_TARGET` if the API uses a different address.
+Vite forwards `/api` requests to `http://localhost:8001`. Set `VITE_DEV_API_TARGET` if the API uses another address. Install WeasyPrint's system dependencies if you need PDF reports.
 
-## Configuration
+## Roles and API
 
-Copy `.env.example` to `.env` before starting Docker Compose. Its values are for local development; use unique secrets and passwords for any deployed environment.
+| Endpoint | Access | Purpose |
+| --- | --- | --- |
+| `POST /api/auth/register/` | Public | Create a user account |
+| `POST /api/auth/token/` | Public | Sign in and receive JWT tokens |
+| `GET /api/auth/me/` | Signed in | Get the current account and role |
+| `/api/projects/` | Signed in | Manage the current user's projects |
+| `GET /api/dashboard/` | User | Get personal project totals |
+| `GET /api/admin/dashboard/` | Admin | Get workspace totals |
+| `GET /api/admin/users/` | Admin | List accounts and project counts |
+| `PATCH /api/admin/users/{id}/role/` | Admin | Set an eligible account's role to `admin` or `user` |
+
+The dashboard API only returns a user's own projects. Admin APIs provide workspace totals and account management; they do not expose project descriptions.
+
+## Stack
+
+- **Frontend:** React, TypeScript, Vite
+- **Backend:** Django REST Framework, Simple JWT
+- **Database:** PostgreSQL
+- **Background jobs:** Redis and Celery
