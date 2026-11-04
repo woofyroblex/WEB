@@ -1,6 +1,10 @@
+from collections.abc import Callable
+from typing import Any
+
 from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.contrib.auth.admin import UserAdmin
+from django.http import HttpRequest
 from django.utils.translation import gettext_lazy as _
 
 from projects.models import Project, ProjectSnapshot, UserProfile
@@ -22,7 +26,11 @@ admin.site.unregister(User)
 @admin.register(User)
 class ProjectHubUserAdmin(UserAdmin):
     inlines = (*UserAdmin.inlines, UserProfileInline)
-    list_display = (*UserAdmin.list_display, "project_hub_role")
+
+    def get_list_display(
+        self, request: HttpRequest
+    ) -> tuple[str | Callable[..., Any], ...]:
+        return (*super().get_list_display(request), "project_hub_role")
 
     @admin.display(description=_("Project Hub role"))
     def project_hub_role(self, obj):

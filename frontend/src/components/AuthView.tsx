@@ -46,7 +46,11 @@ export default function AuthView({
   return (
     <main className="auth-page">
       <section className="auth-story" aria-label="About Project Hub">
-        <a className="brand brand-light" href="/login" onClick={(event) => followLink(event, "login")}>
+        <a
+          className="brand brand-light"
+          href="/login"
+          onClick={(event) => followLink(event, "login")}
+        >
           <span className="brand-symbol">W</span>
           <span>Project Hub</span>
         </a>
@@ -58,22 +62,34 @@ export default function AuthView({
             ownership, and what is next.
           </p>
           <div className="story-note">
-            <span className="story-note-icon" aria-hidden="true">✓</span>
+            <span className="story-note-icon" aria-hidden="true">
+              ✓
+            </span>
             <span>One workspace, with access tailored to your role.</span>
           </div>
         </div>
-        <div className="auth-story-footer">PROJECT HUB <span>·</span> WORKSPACE</div>
+        <div className="auth-story-footer">
+          PROJECT HUB <span>·</span> WORKSPACE
+        </div>
       </section>
 
       <section className="auth-main">
         <div className="auth-card">
-          <a className="brand brand-dark auth-mobile-brand" href="/login" onClick={(event) => followLink(event, "login")}>
+          <a
+            className="brand brand-dark auth-mobile-brand"
+            href="/login"
+            onClick={(event) => followLink(event, "login")}
+          >
             <span className="brand-symbol">W</span>
             <span>Project Hub</span>
           </a>
           <div className="auth-heading">
-            <span className="overline">{registering ? "Get started" : "Welcome back"}</span>
-            <h2>{registering ? "Create your account" : "Sign in to Project Hub"}</h2>
+            <span className="overline">
+              {registering ? "Get started" : "Welcome back"}
+            </span>
+            <h2>
+              {registering ? "Create your account" : "Sign in to Project Hub"}
+            </h2>
             <p>
               {registering
                 ? "Set up your account to start managing your projects."
@@ -81,7 +97,11 @@ export default function AuthView({
             </p>
           </div>
 
-          {error && <div className="form-alert" role="alert">{error}</div>}
+          {error && (
+            <div className="form-alert" role="alert">
+              {error}
+            </div>
+          )}
 
           <form className="auth-form" onSubmit={handleSubmit}>
             <label className="field-label" htmlFor="username">
@@ -121,15 +141,25 @@ export default function AuthView({
                 minLength={8}
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
-                placeholder={registering ? "At least 8 characters" : "Your password"}
+                placeholder={
+                  registering ? "At least 8 characters" : "Your password"
+                }
                 required
               />
             </label>
 
-            <button className="button button-primary auth-submit" disabled={isBusy} type="submit">
+            <button
+              className="button button-primary auth-submit"
+              disabled={isBusy}
+              type="submit"
+            >
               {isBusy
-                ? registering ? "Creating account…" : "Signing in…"
-                : registering ? "Create account" : "Sign in"}
+                ? registering
+                  ? "Creating account…"
+                  : "Signing in…"
+                : registering
+                  ? "Create account"
+                  : "Sign in"}
               <span aria-hidden="true">→</span>
             </button>
           </form>
@@ -137,17 +167,27 @@ export default function AuthView({
           <p className="auth-switch">
             {registering ? "Already have an account?" : "New to Project Hub?"}{" "}
             {registering ? (
-              <a href="/login" onClick={(event) => followLink(event, "login")}>Sign in</a>
+              <a href="/login" onClick={(event) => followLink(event, "login")}>
+                Sign in
+              </a>
             ) : (
-              <a href="/register" onClick={(event) => followLink(event, "register")}>Create an account</a>
+              <a
+                href="/register"
+                onClick={(event) => followLink(event, "register")}
+              >
+                Create an account
+              </a>
             )}
           </p>
 
           <p className="role-note">
-            Account access is assigned by an administrator. New accounts start with the user role.
+            Account access is assigned by an administrator. New accounts start
+            with the user role.
           </p>
         </div>
-        <div className="auth-legal">Secure sign-in <span>·</span> Project Hub</div>
+        <div className="auth-legal">
+          Secure sign-in <span>·</span> Project Hub
+        </div>
       </section>
     </main>
   );

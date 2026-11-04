@@ -86,3 +86,46 @@ The dashboard API only returns a user's own projects. Admin APIs provide workspa
 - **Backend:** Django REST Framework, Simple JWT
 - **Database:** PostgreSQL
 - **Background jobs:** Redis and Celery
+
+## Validation and pull requests
+
+The required GitHub check is **CI passed**. It rejects failed setup, missing
+project manifests, failed or cancelled checks, and workflow-policy regressions.
+Frontend formatting, typechecking, behavior tests, builds, Python typing and
+security checks, dependency audits, and fixable high/critical container findings
+are enforced. Coverage reports are retained as workflow artifacts; Codecov upload
+is optional and requires a configured `CODECOV_TOKEN` for this repository.
+
+Run the frontend checks with:
+
+```sh
+cd frontend
+npm ci
+npm run lint
+npm run format:check
+npm run typecheck
+npm run test:coverage
+npm run build
+```
+
+With backend development dependencies and PostgreSQL/WeasyPrint libraries
+available, run `ruff check .`, `ruff format --check .`, `mypy .`,
+`python manage.py makemigrations --check --dry-run`, and
+`coverage run --source=config,projects manage.py test --noinput` from `backend`.
+From the repository root, install `.github/requirements-ci.txt` and run
+`python -m unittest discover -s scripts/tests -v` to validate automation policies.
+
+AI and Dependabot automation waits for successful CI and merges only the exact
+reviewed commit. AI approval requires a complete textual diff and a strictly
+validated low-risk verdict. Infrastructure/dependency changes and incomplete
+reviews require manual review. The bot scripts run from the PR's trusted base
+branch, so their initial installation becomes active after these changes are
+merged into that branch. GitHub Actions must be allowed to approve pull requests
+in the repository's Actions settings for automated approvals to work.
+
+An owner, member, or collaborator can request conflict resolution by posting
+exactly `@ai-bot resolve conflicts` on a same-repository PR. Forks, stale revisions,
+and conflicts in dependency files or infrastructure are refused. The resolver
+requests CI for the resulting commit; it does not merge the PR. Configure
+`GEMINI_API_KEY` as a repository secret and optionally set the `GEMINI_MODEL`
+repository variable (default: `gemini-3.6-flash`).

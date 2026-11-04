@@ -1,30 +1,50 @@
 name: Dependabot Auto-Merge
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened]
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   dependabot:
     name: Auto-merge Dependabot PRs
     runs-on: ubuntu-latest
-    if: github.actor == 'dependabot[bot]'
+    timeout-minutes: 40
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    concurrency:
+      group: dependabot-merge-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
     steps:
+      - name: Check out trusted automation from the PR base
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
       - name: Fetch Dependabot metadata
         id: metadata
         uses: dependabot/fetch-metadata@v3
         with:
-          github-token: "${{ secrets.GITHUB_TOKEN }}"
-
-      - name: Auto-approve and enable auto-merge for non-major updates
-        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Approve eligible updates and wait for CI before merging
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
         run: |
-          gh pr review --approve "$PR_URL" --body "✅ Auto-approved safe Dependabot bump (${{ steps.metadata.outputs.update-type }})."
-          gh pr merge --auto --squash "$PR_URL" || gh pr comment "$PR_URL" --body "@dependabot squash and merge"
+          if [[ -f scripts/dependabot_merge.py ]]; then
+            python -m scripts.dependabot_merge
+          else
+            echo "Automation is not installed on the base branch yet; manual review is required."
+          fi

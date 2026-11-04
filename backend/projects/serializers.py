@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -6,7 +8,10 @@ from rest_framework import serializers
 
 from projects.models import Project, ProjectSnapshot, UserProfile
 
-User = get_user_model()
+if TYPE_CHECKING:
+    from django.contrib.auth.models import User
+else:
+    User = get_user_model()
 
 
 class RegisterSerializer(serializers.ModelSerializer):
