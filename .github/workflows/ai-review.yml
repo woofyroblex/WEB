@@ -11,9 +11,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ===========================================================================
-  # JOB 1: Automatic AI Code Review & Auto-Merge (Gemini Free Tier)
-  # ===========================================================================
   ai-review:
     name: AI Code Review (Gemini)
     if: >-
@@ -46,19 +43,16 @@ jobs:
           base_ref = os.environ["BASE_REF"]
           gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
 
-          # 1. Get list of changed files
           changed_files = subprocess.check_output(
               ["git", "diff", f"origin/{base_ref}...HEAD", "--name-only"],
               text=True, errors="replace"
           ).splitlines()
 
-          # Check for high-risk sensitive paths that should never be auto-merged by AI alone
           sensitive_patterns = [".github/workflows/", "migrations/", "docker-compose", "Dockerfile"]
           touches_sensitive_paths = any(
               any(p in f for p in sensitive_patterns) for f in changed_files
           )
 
-          # 2. Get PR diff (excluding lockfiles & minified assets noise)
           diff_cmd = [
               "git", "diff", f"origin/{base_ref}...HEAD", "--",
               ".", ":(exclude)*package-lock.json", ":(exclude)*yarn.lock",
@@ -105,7 +99,6 @@ jobs:
           user_prompt = f"Review this PR diff:\n\n```diff\n{truncated_diff}\n```"
 
           def call_gemini():
-              # Free tier models available on Google AI Studio
               candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
               last_err = None
               for model in candidate_models:
@@ -142,7 +135,6 @@ jobs:
               print(f"::warning::Gemini review failed: {e}")
               exit(0)
 
-          # Parse JSON verdict
           safe_to_auto_merge = False
           risk_level = "UNKNOWN"
           json_match = re.search(r"```json\s*(\{.*?\})\s*```", review_text, re.DOTALL)
@@ -154,7 +146,6 @@ jobs:
               except Exception as e:
                   print(f"Could not parse verdict JSON: {e}")
 
-          # Guardrail: force manual review if touching sensitive workflows/migrations
           if touches_sensitive_paths:
               safe_to_auto_merge = False
 
@@ -173,14 +164,12 @@ jobs:
           with open("/tmp/review.md", "w") as f:
               f.write(final_body)
 
-          # Submit GitHub review & trigger auto-merge if safe
           if safe_to_auto_merge:
               subprocess.run([
                   "gh", "pr", "review", pr_num,
                   "--approve",
                   "--body-file", "/tmp/review.md"
               ], check=True)
-              # Enable auto-merge (squash). Will merge once ci-ok passes.
               merge_res = subprocess.run([
                   "gh", "pr", "merge", pr_num,
                   "--auto",
@@ -216,9 +205,6 @@ jobs:
             git merge --abort 2>/dev/null || true
           fi
 
-  # ===========================================================================
-  # JOB 2: AI Merge Conflict Resolver (Triggered by "@ai-bot resolve conflicts")
-  # ===========================================================================
   ai-resolve-conflicts:
     name: AI Conflict Resolver
     if: >-
@@ -296,7 +282,6 @@ jobs:
 
           for filepath in files:
               if filepath.endswith(("package-lock.json", "yarn.lock")):
-                  # Lockfiles: accept base and regenerate later if needed
                   subprocess.run(["git", "checkout", "--theirs", filepath], check=False)
                   subprocess.run(["git", "add", filepath], check=False)
                   resolved_files.append(f"{filepath} (lockfile auto-merged)")
