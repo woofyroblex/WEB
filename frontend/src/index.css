@@ -14,6 +14,42 @@ body {
   margin: 0;
 }
 
+div {
+  border: 1px solid var(--div-border, #b8d5c2) !important;
+}
+
+div:nth-of-type(8n + 1) {
+  --div-border: #b8d5c2;
+}
+
+div:nth-of-type(8n + 2) {
+  --div-border: #e3c2a8;
+}
+
+div:nth-of-type(8n + 3) {
+  --div-border: #b8cce0;
+}
+
+div:nth-of-type(8n + 4) {
+  --div-border: #dfbac0;
+}
+
+div:nth-of-type(8n + 5) {
+  --div-border: #c9c0df;
+}
+
+div:nth-of-type(8n + 6) {
+  --div-border: #b4d6d1;
+}
+
+div:nth-of-type(8n + 7) {
+  --div-border: #e3d3a6;
+}
+
+div:nth-of-type(8n) {
+  --div-border: #cad3ad;
+}
+
 button,
 a,
 input,
