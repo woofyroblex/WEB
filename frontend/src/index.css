@@ -15,7 +15,7 @@ body {
 }
 
 div {
-  border: 1px solid var(--div-border, #b8d5c2);
+  border: 1px solid var(--div-border, #b8d5c2) !important;
 }
 
 div:nth-of-type(8n + 1) {
