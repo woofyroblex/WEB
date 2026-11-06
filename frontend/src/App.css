@@ -1179,6 +1179,9 @@ tbody tr:hover {
     min-height: 100vh;
     display: block;
   }
+  .auth-story > .brand {
+    display: none;
+  }
   .auth-story {
     min-height: auto;
     padding: 22px 24px 24px;
@@ -1223,33 +1226,55 @@ tbody tr:hover {
     width: 100%;
     min-height: auto;
     display: grid;
-    grid-template-columns: auto 1fr;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: 12px;
-    padding: 12px 17px;
+    gap: 8px 12px;
+    padding: 12px 17px 8px;
     border-right: 0;
     border-bottom: 1px solid #e8eeea;
   }
   .sidebar-brand {
     margin: 0;
   }
-  .sidebar-label,
-  .sidebar-bottom,
-  .sidebar-nav .sidebar-link:nth-child(2) {
+  .sidebar-label {
     display: none;
   }
   .sidebar-nav {
     display: flex;
-    justify-content: flex-end;
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    gap: 5px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .sidebar-nav::-webkit-scrollbar {
+    display: none;
   }
   .sidebar-link {
     width: auto;
-    min-height: 36px;
+    min-height: 40px;
+    flex: 0 0 auto;
     padding: 0 10px;
     font-size: 10px;
   }
   .sidebar-link-icon {
     font-size: 15px;
+  }
+  .sidebar-bottom {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    margin-top: 0;
+  }
+  .signed-in-card,
+  .sidebar-footer {
+    display: none;
+  }
+  .sidebar-signout {
+    width: auto;
+    min-height: 38px;
+    margin: 0;
   }
   .dashboard-topbar {
     height: 54px;
@@ -1325,6 +1350,53 @@ tbody tr:hover {
   }
   .project-dialog {
     padding: 21px;
+    max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - 24px);
+    overflow-y: auto;
+  }
+  .dialog-backdrop {
+    align-items: start;
+    overflow-y: auto;
+    padding: 12px;
+  }
+}
+
+@media (max-width: 480px) {
+  .auth-story {
+    padding-right: 18px;
+    padding-left: 18px;
+  }
+  .auth-story h1 {
+    font-size: clamp(28px, 8vw, 32px);
+  }
+  .auth-main {
+    padding-top: 28px;
+  }
+  .dashboard-content {
+    padding-right: 13px;
+    padding-left: 13px;
+  }
+  .page-heading h1 {
+    overflow-wrap: anywhere;
+  }
+  .metric-grid {
+    gap: 8px;
+  }
+  .metric-card {
+    gap: 8px;
+    padding: 13px 10px;
+  }
+  .metric-copy span {
+    white-space: normal;
+  }
+  .panel-heading h2 {
+    overflow-wrap: anywhere;
+  }
+  .dialog-actions {
+    flex-wrap: wrap;
+  }
+  .dialog-actions .button {
+    flex: 1 1 auto;
   }
 }
 
