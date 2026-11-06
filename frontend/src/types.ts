@@ -18,6 +18,17 @@ export type AdminUser = User & {
   role_locked: boolean;
 };
 
+export type AdminDatabaseTable = "users" | "projects" | "snapshots";
+
+export type AdminDatabaseRow = Record<string, string | number | null>;
+
+export type AdminDatabasePage = {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: AdminDatabaseRow[];
+};
+
 export type ProjectStatus = "backlog" | "in_progress" | "completed";
 
 export type Project = {

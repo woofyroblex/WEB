@@ -1,16 +1,20 @@
 from django.contrib.auth import get_user_model
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.template.loader import render_to_string
 from django.utils import timezone
 from rest_framework import generics, status, viewsets
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, BasePermission, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from projects.models import Project, ProjectSnapshot, UserProfile
 from projects.serializers import (
+    AdminDatabaseProjectSerializer,
+    AdminDatabaseSnapshotSerializer,
+    AdminDatabaseUserSerializer,
     AdminUserSerializer,
     CurrentUserSerializer,
     ProjectSerializer,
@@ -137,6 +141,66 @@ class AdminUserListView(generics.ListAPIView):
             .annotate(project_count=Count("projects"))
             .order_by("-date_joined")
         )
+
+
+class AdminDatabasePagination(PageNumberPagination):
+    page_size = 25
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+
+class AdminDatabaseView(APIView):
+    permission_classes = (IsAuthenticated, IsProjectHubAdmin)
+    pagination_class = AdminDatabasePagination
+
+    def get(self, request):
+        table = request.query_params.get("table", "users")
+        search = request.query_params.get("search", "").strip()
+
+        if table == "users":
+            queryset = (
+                User.objects.select_related("profile")
+                .annotate(project_count=Count("projects"))
+                .order_by("-date_joined", "-id")
+            )
+            if search:
+                queryset = queryset.filter(
+                    Q(username__icontains=search) | Q(email__icontains=search)
+                )
+            serializer_class = AdminDatabaseUserSerializer
+        elif table == "projects":
+            queryset = Project.objects.select_related("owner").order_by(
+                "-updated_at", "-id"
+            )
+            if search:
+                queryset = queryset.filter(
+                    Q(title__icontains=search)
+                    | Q(description__icontains=search)
+                    | Q(owner__username__icontains=search)
+                )
+            serializer_class = AdminDatabaseProjectSerializer
+        elif table == "snapshots":
+            queryset = ProjectSnapshot.objects.select_related("owner").order_by(
+                "-day", "-id"
+            )
+            if search:
+                queryset = queryset.filter(owner__username__icontains=search)
+            serializer_class = AdminDatabaseSnapshotSerializer
+        else:
+            return Response(
+                {"table": "Choose users, projects, or snapshots."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        if page is None:
+            return Response(
+                {"detail": "Could not paginate database records."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        results = serializer_class(page, many=True).data
+        return paginator.get_paginated_response(results)
 
 
 class AdminUserRoleView(APIView):
