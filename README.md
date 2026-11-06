@@ -7,6 +7,8 @@ A simple project dashboard with separate user and admin access, backed by a Djan
 - Login and registration pages with JWT authentication
 - Regular users manage their own projects and statuses
 - Admins see workspace totals and manage account roles
+- Admins can search paginated, read-only views of account, project, and daily
+  snapshot records
 - Project summaries, search, and create, edit, and delete actions
 - PostgreSQL storage with Redis and Celery services
 

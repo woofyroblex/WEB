@@ -5,6 +5,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from projects.views import (
     AdminDashboardView,
+    AdminDatabaseView,
     AdminUserListView,
     AdminUserRoleView,
     CurrentUserView,
@@ -31,6 +32,7 @@ urlpatterns = [
     ),
     path("api/dashboard/", DashboardView.as_view(), name="dashboard"),
     path("api/admin/dashboard/", AdminDashboardView.as_view(), name="admin_dashboard"),
+    path("api/admin/database/", AdminDatabaseView.as_view(), name="admin_database"),
     path("api/admin/users/", AdminUserListView.as_view(), name="admin_users"),
     path(
         "api/admin/users/<int:user_id>/role/",

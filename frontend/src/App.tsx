@@ -4,6 +4,9 @@ import AuthView from "./components/AuthView";
 import type { AuthMode } from "./components/AuthView";
 import type {
   AdminDashboard,
+  AdminDatabasePage,
+  AdminDatabaseRow,
+  AdminDatabaseTable,
   AdminUser,
   AuthTokens,
   DashboardSummary,
@@ -136,6 +139,47 @@ const STATUS_LABELS: Record<ProjectStatus, string> = {
   in_progress: "In progress",
   completed: "Completed",
 };
+const DATABASE_PAGE_SIZE = 25;
+const DATABASE_TABLES: Record<
+  AdminDatabaseTable,
+  { label: string; columns: Array<{ key: string; label: string }> }
+> = {
+  users: {
+    label: "Accounts",
+    columns: [
+      { key: "id", label: "ID" },
+      { key: "username", label: "Username" },
+      { key: "email", label: "Email" },
+      { key: "role", label: "Role" },
+      { key: "date_joined", label: "Joined" },
+      { key: "project_count", label: "Projects" },
+    ],
+  },
+  projects: {
+    label: "Projects",
+    columns: [
+      { key: "id", label: "ID" },
+      { key: "title", label: "Title" },
+      { key: "owner_username", label: "Owner" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status" },
+      { key: "created_at", label: "Created" },
+      { key: "updated_at", label: "Updated" },
+    ],
+  },
+  snapshots: {
+    label: "Snapshots",
+    columns: [
+      { key: "id", label: "ID" },
+      { key: "owner_username", label: "Owner" },
+      { key: "day", label: "Day" },
+      { key: "backlog_count", label: "Not started" },
+      { key: "in_progress_count", label: "In progress" },
+      { key: "completed_count", label: "Completed" },
+      { key: "created_at", label: "Recorded" },
+    ],
+  },
+};
 
 export default function App() {
   const [route, setRoute] = useState<Route>(routeFromPath);
@@ -152,6 +196,17 @@ export default function App() {
   const [notice, setNotice] = useState("");
   const [projects, setProjects] = useState<Project[]>([]);
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
+  const [databaseTable, setDatabaseTable] =
+    useState<AdminDatabaseTable>("users");
+  const [databasePage, setDatabasePage] = useState(1);
+  const [databaseSearch, setDatabaseSearch] = useState("");
+  const [databaseData, setDatabaseData] = useState<AdminDatabasePage | null>(
+    null,
+  );
+  const [databaseDataKey, setDatabaseDataKey] = useState("");
+  const [databaseLoading, setDatabaseLoading] = useState(false);
+  const [databaseError, setDatabaseError] = useState("");
+  const [databaseRefreshKey, setDatabaseRefreshKey] = useState(0);
   const [summary, setSummary] = useState<DashboardSummary>({
     total: 0,
     backlog: 0,
@@ -323,6 +378,67 @@ export default function App() {
       active = false;
     };
   }, [profile, tokens, reloadKey]);
+
+  useEffect(() => {
+    if (!profile || profile.role !== "admin" || !tokens) return;
+    const currentTokens = tokens;
+    let active = true;
+
+    async function loadDatabase() {
+      if (!active) return;
+      setDatabaseLoading(true);
+      setDatabaseError("");
+      const params = new URLSearchParams({
+        table: databaseTable,
+        page: String(databasePage),
+        page_size: String(DATABASE_PAGE_SIZE),
+      });
+      if (databaseSearch.trim()) params.set("search", databaseSearch.trim());
+      const requestKey = `${databaseTable}|${databasePage}|${databaseSearch.trim()}`;
+
+      try {
+        const data = await authorizedRequest<AdminDatabasePage>(
+          `/admin/database/?${params.toString()}`,
+          currentTokens,
+          persistTokens,
+        );
+        if (active) {
+          setDatabaseData(data);
+          setDatabaseDataKey(requestKey);
+        }
+      } catch (requestError) {
+        if (!active) return;
+        if (requestError instanceof ApiError && requestError.status === 401) {
+          persistTokens(null);
+          navigate("login", true);
+        } else {
+          setDatabaseError(
+            requestError instanceof Error
+              ? requestError.message
+              : "Could not load database records.",
+          );
+        }
+      } finally {
+        if (active) setDatabaseLoading(false);
+      }
+    }
+
+    void loadDatabase();
+    const refreshTimer = window.setInterval(() => {
+      void loadDatabase();
+    }, 30_000);
+    return () => {
+      active = false;
+      window.clearInterval(refreshTimer);
+    };
+  }, [
+    profile,
+    tokens,
+    databaseTable,
+    databasePage,
+    databaseSearch,
+    databaseRefreshKey,
+  ]);
 
   async function handleSignIn(username: string, password: string) {
     setAuthBusy(true);
@@ -531,6 +647,11 @@ export default function App() {
         .includes(query),
     );
   }, [adminUsers, search]);
+  const currentDatabaseData =
+    databaseDataKey ===
+    `${databaseTable}|${databasePage}|${databaseSearch.trim()}`
+      ? databaseData
+      : null;
 
   if (authLoading) {
     return (
@@ -633,6 +754,20 @@ export default function App() {
             <span className="sidebar-link-icon">{isAdmin ? "♙" : "▦"}</span>
             {isAdmin ? "User management" : "My projects"}
           </button>
+          {isAdmin && (
+            <button
+              className="sidebar-link"
+              type="button"
+              onClick={() =>
+                document
+                  .getElementById("database-panel")
+                  ?.scrollIntoView({ behavior: "smooth" })
+              }
+            >
+              <span className="sidebar-link-icon">▤</span>
+              Database
+            </button>
+          )}
         </nav>
 
         <div className="sidebar-bottom">
@@ -985,6 +1120,174 @@ export default function App() {
               <div className="panel-footnote">
                 Showing {visibleProjects.length} of {projects.length} project
                 {projects.length === 1 ? "" : "s"}
+              </div>
+            </section>
+          )}
+
+          {isAdmin && (
+            <section
+              className="panel data-panel database-panel"
+              id="database-panel"
+            >
+              <div className="panel-heading data-panel-heading database-heading">
+                <div>
+                  <h2>Live database</h2>
+                  <p>
+                    Read-only application records. Refreshes automatically every
+                    30 seconds.
+                  </p>
+                </div>
+                <div className="database-actions">
+                  <label className="search-control">
+                    <span aria-hidden="true">⌕</span>
+                    <input
+                      value={databaseSearch}
+                      onChange={(event) => {
+                        setDatabaseSearch(event.target.value);
+                        setDatabasePage(1);
+                      }}
+                      placeholder={`Search ${DATABASE_TABLES[databaseTable].label.toLowerCase()}`}
+                      aria-label="Search database records"
+                    />
+                  </label>
+                  <button
+                    className="button button-quiet database-refresh"
+                    type="button"
+                    onClick={() => setDatabaseRefreshKey((key) => key + 1)}
+                    disabled={databaseLoading}
+                  >
+                    {databaseLoading ? "Refreshing…" : "Refresh"}
+                  </button>
+                </div>
+              </div>
+              <div className="database-tabs" aria-label="Database tables">
+                {(Object.keys(DATABASE_TABLES) as AdminDatabaseTable[]).map(
+                  (table) => (
+                    <button
+                      key={table}
+                      type="button"
+                      aria-pressed={databaseTable === table}
+                      onClick={() => {
+                        setDatabaseTable(table);
+                        setDatabasePage(1);
+                      }}
+                    >
+                      {DATABASE_TABLES[table].label}
+                      {databaseTable === table && currentDatabaseData && (
+                        <span>{currentDatabaseData.count}</span>
+                      )}
+                    </button>
+                  ),
+                )}
+              </div>
+              {databaseError && (
+                <div className="dashboard-alert database-alert" role="alert">
+                  {databaseError}
+                </div>
+              )}
+              <div className="table-scroll">
+                <table className="database-table">
+                  <thead>
+                    <tr>
+                      {DATABASE_TABLES[databaseTable].columns.map((column) => (
+                        <th key={column.key}>{column.label}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {databaseLoading && !currentDatabaseData ? (
+                      <tr>
+                        <td
+                          className="table-empty"
+                          colSpan={
+                            DATABASE_TABLES[databaseTable].columns.length
+                          }
+                        >
+                          Loading records…
+                        </td>
+                      </tr>
+                    ) : currentDatabaseData?.results.length ? (
+                      currentDatabaseData.results.map(
+                        (row: AdminDatabaseRow, index) => (
+                          <tr key={`${databaseTable}-${row.id ?? index}`}>
+                            {DATABASE_TABLES[databaseTable].columns.map(
+                              (column) => {
+                                const value = row[column.key];
+                                const formatted =
+                                  value == null
+                                    ? "—"
+                                    : column.key === "date_joined" ||
+                                        column.key === "created_at" ||
+                                        column.key === "updated_at"
+                                      ? formatDate(String(value))
+                                      : String(value);
+                                return (
+                                  <td
+                                    className={
+                                      column.key === "description"
+                                        ? "database-description"
+                                        : undefined
+                                    }
+                                    key={column.key}
+                                  >
+                                    {formatted}
+                                  </td>
+                                );
+                              },
+                            )}
+                          </tr>
+                        ),
+                      )
+                    ) : (
+                      <tr>
+                        <td
+                          className="table-empty"
+                          colSpan={
+                            DATABASE_TABLES[databaseTable].columns.length
+                          }
+                        >
+                          {databaseLoading
+                            ? "Refreshing records…"
+                            : "No records found."}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div className="database-pagination">
+                <span>
+                  {currentDatabaseData
+                    ? `${currentDatabaseData.count} ${DATABASE_TABLES[databaseTable].label.toLowerCase()}`
+                    : "Loading records"}
+                </span>
+                <div>
+                  <button
+                    className="button button-quiet"
+                    type="button"
+                    disabled={databasePage <= 1 || databaseLoading}
+                    onClick={() => setDatabasePage((page) => page - 1)}
+                  >
+                    Previous
+                  </button>
+                  <span>
+                    Page {databasePage} of{" "}
+                    {Math.max(
+                      1,
+                      Math.ceil(
+                        (currentDatabaseData?.count ?? 0) / DATABASE_PAGE_SIZE,
+                      ),
+                    )}
+                  </span>
+                  <button
+                    className="button button-quiet"
+                    type="button"
+                    disabled={databaseLoading || !currentDatabaseData?.next}
+                    onClick={() => setDatabasePage((page) => page + 1)}
+                  >
+                    Next
+                  </button>
+                </div>
               </div>
             </section>
           )}

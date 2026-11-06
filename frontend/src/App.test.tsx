@@ -71,6 +71,58 @@ function workspaceApi(user = member, projects = [project]) {
         },
       ]);
     }
+    if (path.startsWith("/api/admin/database/")) {
+      const table = new URL(path, "http://localhost").searchParams.get("table");
+      const records = {
+        users: [
+          {
+            id: admin.id,
+            username: admin.username,
+            email: admin.email,
+            role: admin.role,
+            date_joined: "2026-11-01T00:00:00Z",
+            project_count: 0,
+          },
+          {
+            id: member.id,
+            username: member.username,
+            email: member.email,
+            role: member.role,
+            date_joined: "2026-11-01T00:00:00Z",
+            project_count: 1,
+          },
+        ],
+        projects: [
+          {
+            id: project.id,
+            title: project.title,
+            description: project.description,
+            status: project.status,
+            owner_username: member.username,
+            created_at: project.created_at,
+            updated_at: project.updated_at,
+          },
+        ],
+        snapshots: [
+          {
+            id: 5,
+            owner_username: member.username,
+            day: "2026-11-01",
+            backlog_count: 1,
+            in_progress_count: 0,
+            completed_count: 0,
+            created_at: "2026-11-01T00:00:00Z",
+          },
+        ],
+      };
+      const results = records[table as keyof typeof records] ?? [];
+      return json({
+        count: results.length,
+        next: null,
+        previous: null,
+        results,
+      });
+    }
     throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
   });
 }
@@ -253,6 +305,30 @@ describe("workspace access and project actions", () => {
     expect(
       screen.queryByRole("button", { name: /new project/i }),
     ).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Live database" }),
+    ).toBeInTheDocument();
+  });
+
+  it("lets administrators inspect live projects and snapshots", async () => {
+    const user = userEvent.setup();
+    sessionStorage.setItem(sessionKey, JSON.stringify(tokens));
+    const fetcher = workspaceApi(admin);
+    vi.stubGlobal("fetch", fetcher);
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Live database" });
+    await user.click(screen.getByRole("button", { name: /^Projects$/ }));
+    expect(await screen.findByText(project.title)).toBeInTheDocument();
+    expect(screen.getByText("Finish the project")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^Snapshots$/ }));
+    expect(await screen.findByText("2026-11-01")).toBeInTheDocument();
+    expect(
+      fetcher.mock.calls.some(([input]) =>
+        String(input).includes("table=snapshots"),
+      ),
+    ).toBe(true);
   });
 
   it("creates a project and displays the saved record", async () => {

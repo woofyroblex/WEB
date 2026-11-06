@@ -1095,6 +1095,86 @@ tbody tr:hover {
   color: #9aa59f;
   font-size: 9px;
 }
+.database-panel {
+  margin-top: 17px;
+}
+.database-heading {
+  align-items: flex-start;
+}
+.database-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.database-refresh {
+  min-height: 35px;
+  flex: 0 0 auto;
+  font-size: 10px;
+}
+.database-tabs {
+  display: flex;
+  gap: 5px;
+  padding: 0 22px 13px;
+  overflow-x: auto;
+}
+.database-tabs button {
+  min-height: 32px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #718078;
+  background: #f5f8f6;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 650;
+}
+.database-tabs button[aria-pressed="true"] {
+  border-color: #d7ecdf;
+  color: #176d4f;
+  background: #eaf5ef;
+}
+.database-tabs button span {
+  color: #6c8073;
+  font-size: 9px;
+}
+.database-alert {
+  margin: 0 22px 12px;
+}
+.database-table td {
+  max-width: 260px;
+}
+.database-table .database-description {
+  min-width: 180px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.database-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 22px;
+  border-top: 1px solid #edf1ee;
+  color: #89968e;
+  font-size: 10px;
+}
+.database-pagination > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.database-pagination .button {
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 9px;
+}
+.database-pagination .button:disabled {
+  opacity: 0.5;
+}
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -1324,6 +1404,26 @@ tbody tr:hover {
     align-items: flex-start;
     flex-direction: column;
     padding: 17px;
+  }
+  .database-actions {
+    width: 100%;
+  }
+  .database-tabs {
+    padding-right: 17px;
+    padding-left: 17px;
+  }
+  .database-alert {
+    margin-right: 17px;
+    margin-left: 17px;
+  }
+  .database-pagination {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 12px 17px;
+  }
+  .database-pagination > div {
+    width: 100%;
+    justify-content: space-between;
   }
   .search-control {
     width: 100%;

@@ -194,6 +194,70 @@ class AccountRoleApiTests(TestCase):
         self.assertNotIn("Admin work", str(response.data))
         self.assertNotIn("Member work", str(response.data))
 
+    def test_admin_database_lists_safe_records_from_each_application_table(self):
+        project = Project.objects.create(
+            owner=self.user,
+            title="Database project",
+            description="Project details for administrators",
+        )
+        snapshot = ProjectSnapshot.objects.create(
+            owner=self.user,
+            day="2026-11-06",
+            backlog_count=1,
+        )
+        self.client.force_authenticate(self.admin)
+
+        users = self.client.get("/api/admin/database/?table=users")
+        projects = self.client.get("/api/admin/database/?table=projects")
+        snapshots = self.client.get("/api/admin/database/?table=snapshots")
+
+        self.assertEqual(users.status_code, 200)
+        member_record = next(
+            row for row in users.data["results"] if row["id"] == self.user.pk
+        )
+        self.assertEqual(member_record["project_count"], 1)
+        self.assertEqual(member_record["role"], UserProfile.Role.USER)
+        self.assertNotIn("password", member_record)
+        self.assertNotIn("is_superuser", member_record)
+        self.assertEqual(projects.status_code, 200)
+        self.assertEqual(projects.data["results"][0]["id"], project.pk)
+        self.assertEqual(
+            projects.data["results"][0]["owner_username"], self.user.username
+        )
+        self.assertEqual(
+            projects.data["results"][0]["description"],
+            "Project details for administrators",
+        )
+        self.assertEqual(snapshots.status_code, 200)
+        self.assertEqual(snapshots.data["results"][0]["id"], snapshot.pk)
+        self.assertEqual(
+            snapshots.data["results"][0]["owner_username"],
+            self.user.username,
+        )
+
+    def test_admin_database_requires_admin_and_rejects_unknown_table(self):
+        self.client.force_authenticate(self.user)
+        denied = self.client.get("/api/admin/database/?table=users")
+        self.assertEqual(denied.status_code, 403)
+
+        self.client.force_authenticate(self.admin)
+        invalid = self.client.get("/api/admin/database/?table=auth_user")
+        self.assertEqual(invalid.status_code, 400)
+
+    def test_admin_database_search_and_page_size_are_bounded(self):
+        for index in range(30):
+            Project.objects.create(owner=self.user, title=f"Project {index}")
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(
+            "/api/admin/database/?table=projects&search=Project%2029&page_size=100"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(len(response.data["results"]), 1)
+        self.assertEqual(response.data["results"][0]["title"], "Project 29")
+
     def test_admin_can_promote_and_demote_an_account(self):
         self.client.force_authenticate(self.admin)
         url = f"/api/admin/users/{self.user.pk}/role/"

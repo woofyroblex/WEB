@@ -81,6 +81,55 @@ class AdminUserSerializer(serializers.ModelSerializer):
         return bool(user.is_staff or user.is_superuser)
 
 
+class AdminDatabaseUserSerializer(serializers.ModelSerializer):
+    role = serializers.SerializerMethodField()
+    project_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = User
+        fields = ("id", "username", "email", "role", "date_joined", "project_count")
+        read_only_fields = fields
+
+    def get_role(self, user: User) -> str:
+        if user.is_staff or user.is_superuser:
+            return UserProfile.Role.ADMIN
+        return user.profile.role
+
+
+class AdminDatabaseProjectSerializer(serializers.ModelSerializer):
+    owner_username = serializers.CharField(source="owner.username", read_only=True)
+
+    class Meta:
+        model = Project
+        fields = (
+            "id",
+            "title",
+            "description",
+            "status",
+            "owner_username",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = fields
+
+
+class AdminDatabaseSnapshotSerializer(serializers.ModelSerializer):
+    owner_username = serializers.CharField(source="owner.username", read_only=True)
+
+    class Meta:
+        model = ProjectSnapshot
+        fields = (
+            "id",
+            "owner_username",
+            "day",
+            "backlog_count",
+            "in_progress_count",
+            "completed_count",
+            "created_at",
+        )
+        read_only_fields = fields
+
+
 class UserRoleUpdateSerializer(serializers.Serializer):
     role = serializers.ChoiceField(choices=UserProfile.Role.choices)
 
