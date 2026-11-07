@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.test import TestCase
 from rest_framework.test import APIClient
 
@@ -43,6 +44,18 @@ class ProjectApiTests(TestCase):
         self.assertEqual(token_response.status_code, 200)
         self.assertIn("access", token_response.data)
         self.assertIn("refresh", token_response.data)
+
+    def test_login_is_rate_limited(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+
+        for _ in range(5):
+            response = self.client.post("/api/auth/token/", {}, format="json")
+            self.assertEqual(response.status_code, 400)
+
+        response = self.client.post("/api/auth/token/", {}, format="json")
+
+        self.assertEqual(response.status_code, 429)
 
     def test_projects_are_private_to_their_owner(self):
         Project.objects.create(owner=self.user, title="My project")
