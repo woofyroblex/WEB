@@ -1,9 +1,10 @@
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from projects.models import Project, ProjectSnapshot, UserProfile
-from projects.tasks import record_project_snapshot
+from projects.tasks import record_all_project_snapshots, record_project_snapshot
 
 User = get_user_model()
 
@@ -92,6 +93,38 @@ class ProjectApiTests(TestCase):
         self.assertEqual(ProjectSnapshot.objects.filter(owner=self.user).count(), 1)
         self.assertEqual(
             ProjectSnapshot.objects.get(owner=self.user).completed_count,
+            1,
+        )
+
+    def test_daily_snapshots_use_constant_queries_for_all_owners(self):
+        Project.objects.create(owner=self.user, title="Backlog project")
+        Project.objects.create(
+            owner=self.user,
+            title="Completed project",
+            status=Project.Status.COMPLETED,
+        )
+        Project.objects.create(
+            owner=self.other_user,
+            title="In-progress project",
+            status=Project.Status.IN_PROGRESS,
+        )
+        previous_snapshot = ProjectSnapshot.objects.create(
+            owner=self.user,
+            day=timezone.localdate(),
+            backlog_count=9,
+            completed_count=9,
+        )
+
+        with self.assertNumQueries(2):
+            snapshot_count = record_all_project_snapshots.run()
+
+        self.assertEqual(snapshot_count, 2)
+        previous_snapshot.refresh_from_db()
+        self.assertEqual(previous_snapshot.backlog_count, 1)
+        self.assertEqual(previous_snapshot.in_progress_count, 0)
+        self.assertEqual(previous_snapshot.completed_count, 1)
+        self.assertEqual(
+            ProjectSnapshot.objects.get(owner=self.other_user).in_progress_count,
             1,
         )
 

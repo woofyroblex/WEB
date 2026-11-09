@@ -1,14 +1,11 @@
 from datetime import date
 
 from celery import shared_task
-from django.contrib.auth import get_user_model
 from django.db import OperationalError
 from django.db.models import Count
 from django.utils import timezone
 
 from projects.models import Project, ProjectSnapshot
-
-User = get_user_model()
 
 
 def _record_snapshot(owner_id: int, day: date) -> ProjectSnapshot:
@@ -43,9 +40,32 @@ def record_project_snapshot(owner_id: int) -> int:
 @shared_task(time_limit=300, soft_time_limit=270)
 def record_all_project_snapshots() -> int:
     day = timezone.localdate()
-    owner_ids = (
-        User.objects.filter(projects__isnull=False)
-        .values_list("id", flat=True)
-        .distinct()
+    project_counts = Project.objects.values("owner_id", "status").annotate(
+        total=Count("id")
     )
-    return sum(_record_snapshot(owner_id, day) is not None for owner_id in owner_ids)
+    counts_by_owner: dict[int, dict[str, int]] = {}
+    for row in project_counts:
+        counts_by_owner.setdefault(row["owner_id"], {})[row["status"]] = row["total"]
+
+    snapshots = [
+        ProjectSnapshot(
+            owner_id=owner_id,
+            day=day,
+            backlog_count=counts.get(Project.Status.BACKLOG, 0),
+            in_progress_count=counts.get(Project.Status.IN_PROGRESS, 0),
+            completed_count=counts.get(Project.Status.COMPLETED, 0),
+        )
+        for owner_id, counts in counts_by_owner.items()
+    ]
+    ProjectSnapshot.objects.bulk_create(
+        snapshots,
+        update_conflicts=True,
+        unique_fields=("owner", "day"),
+        update_fields=(
+            "backlog_count",
+            "in_progress_count",
+            "completed_count",
+            "created_at",
+        ),
+    )
+    return len(snapshots)

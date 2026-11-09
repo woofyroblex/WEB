@@ -331,6 +331,39 @@ describe("workspace access and project actions", () => {
     ).toBe(true);
   });
 
+  it("debounces live database searches while typing", async () => {
+    const user = userEvent.setup();
+    sessionStorage.setItem(sessionKey, JSON.stringify(tokens));
+    const fetcher = workspaceApi(admin);
+    vi.stubGlobal("fetch", fetcher);
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Live database" });
+    const initialSearchRequests = fetcher.mock.calls.filter(([input]) =>
+      String(input).includes("search="),
+    ).length;
+    await user.type(
+      screen.getByLabelText("Search database records"),
+      "project",
+    );
+
+    expect(
+      fetcher.mock.calls.filter(([input]) => String(input).includes("search=")),
+    ).toHaveLength(initialSearchRequests);
+    await waitFor(() =>
+      expect(
+        fetcher.mock.calls.filter(([input]) =>
+          String(input).includes("search="),
+        ),
+      ).toHaveLength(initialSearchRequests + 1),
+    );
+    expect(
+      fetcher.mock.calls.some(([input]) =>
+        String(input).includes("search=project"),
+      ),
+    ).toBe(true);
+  });
+
   it("creates a project and displays the saved record", async () => {
     const user = userEvent.setup();
     sessionStorage.setItem(sessionKey, JSON.stringify(tokens));
