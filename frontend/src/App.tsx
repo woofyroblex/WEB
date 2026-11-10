@@ -393,8 +393,9 @@ export default function App() {
         page: String(databasePage),
         page_size: String(DATABASE_PAGE_SIZE),
       });
-      if (databaseSearch.trim()) params.set("search", databaseSearch.trim());
-      const requestKey = `${databaseTable}|${databasePage}|${databaseSearch.trim()}`;
+      const searchTerm = databaseSearch.trim();
+      if (searchTerm) params.set("search", searchTerm);
+      const requestKey = `${databaseTable}|${databasePage}|${searchTerm}`;
 
       try {
         const data = await authorizedRequest<AdminDatabasePage>(
@@ -423,12 +424,16 @@ export default function App() {
       }
     }
 
-    void loadDatabase();
+    const searchTimer = window.setTimeout(
+      () => void loadDatabase(),
+      databaseSearch.trim() ? 250 : 0,
+    );
     const refreshTimer = window.setInterval(() => {
       void loadDatabase();
     }, 30_000);
     return () => {
       active = false;
+      window.clearTimeout(searchTimer);
       window.clearInterval(refreshTimer);
     };
   }, [
