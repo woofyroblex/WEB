@@ -25,7 +25,7 @@ Open the dashboard at [http://localhost:5173](http://localhost:5173). The API he
 
 ### Create the first admin
 
-With the Docker Compose stack running, open another terminal and create a Django superuser:
+With the Docker  stack running, open another terminal and create a Django superuser:
 
 ```sh
 docker compose exec backend python manage.py createsuperuser
