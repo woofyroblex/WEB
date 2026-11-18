@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.views import TokenRefreshView
 
 from projects.views import (
     AdminDashboardView,
@@ -11,6 +11,7 @@ from projects.views import (
     CurrentUserView,
     DashboardView,
     HealthView,
+    LoginView,
     ProjectPdfView,
     ProjectViewSet,
     RegisterView,
@@ -23,7 +24,7 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/health/", HealthView.as_view(), name="health"),
     path("api/auth/register/", RegisterView.as_view(), name="register"),
-    path("api/auth/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
+    path("api/auth/token/", LoginView.as_view(), name="token_obtain_pair"),
     path("api/auth/me/", CurrentUserView.as_view(), name="current_user"),
     path(
         "api/auth/token/refresh/",

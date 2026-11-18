@@ -71,6 +71,15 @@ DATABASES = {
     )
 }
 
+CACHE_URL = os.environ.get("CACHE_URL")
+if CACHE_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": CACHE_URL,
+        }
+    }
+
 AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
@@ -115,7 +124,7 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.AnonRateThrottle",
     ],
-    "DEFAULT_THROTTLE_RATES": {"anon": "30/minute"},
+    "DEFAULT_THROTTLE_RATES": {"anon": "30/minute", "login": "5/minute"},
 }
 
 SIMPLE_JWT = {

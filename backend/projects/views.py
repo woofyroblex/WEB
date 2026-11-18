@@ -8,7 +8,9 @@ from rest_framework import generics, status, viewsets
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, BasePermission, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 from projects.models import Project, ProjectSnapshot, UserProfile
 from projects.serializers import (
@@ -25,6 +27,14 @@ from projects.serializers import (
 from projects.tasks import record_project_snapshot
 
 User = get_user_model()
+
+
+class LoginRateThrottle(AnonRateThrottle):
+    scope = "login"
+
+
+class LoginView(TokenObtainPairView):
+    throttle_classes = (LoginRateThrottle,)
 
 
 class HealthView(APIView):
