@@ -11,6 +11,27 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+AI_WORKFLOW = yaml.safe_load(
+    (ROOT / ".github/workflows/ai-review.yml").read_text()
+)
+
+
+class AIReviewWorkflowTests(unittest.TestCase):
+    def test_review_fetches_the_exact_pull_request_revision(self):
+        steps = AI_WORKFLOW["jobs"]["ai-review"]["steps"]
+        fetch = next(
+            step
+            for step in steps
+            if step.get("name") == "Fetch the exact PR revision"
+        )
+        self.assertEqual(
+            fetch["env"]["HEAD_SHA"],
+            "${{ github.event.pull_request.head.sha }}",
+        )
+        self.assertEqual(
+            fetch["run"],
+            'git fetch --no-tags --depth=1 origin "$HEAD_SHA"',
+        )
 
 
 class FinalGateTests(unittest.TestCase):
